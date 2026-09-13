@@ -675,7 +675,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if len(failedAccountIDs) == 0 {
 				if legacyCompact && errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available accounts support /responses/compact", streamStarted)
+					h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "compact_not_supported", "compact_not_supported", "No available accounts support /responses/compact", streamStarted, false)
 					return
 				}
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
@@ -683,7 +683,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
-				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+				h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType, cls.ErrType, cls.Message, streamStarted, false)
 				return
 			}
 			if lastFailoverErr != nil {
@@ -698,7 +698,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
 			}
-			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+			h.handleStreamingAwareErrorWithCode(c, cls.Status, cls.ErrType, cls.ErrType, cls.Message, streamStarted, false)
 			return
 		}
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
@@ -3388,9 +3388,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 
-	// 使用默认的错误映射
+	// 使用默认的错误映射：状态码/类型/文案全部来自 mapUpstreamError，
+	// 上游原文不进响应；code 复用映射出的类型，让下游能明确归类失败。
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleStreamingAwareErrorWithCode(c, status, errType, errType, errMsg, streamStarted, false)
 }
 
 func credentialFailoverClientResponse(failoverErr *service.UpstreamFailoverError) (int, string) {
@@ -3441,7 +3442,7 @@ func isSafeRetryAfter(value string) bool {
 func (h *OpenAIGatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
-	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
+	h.handleStreamingAwareErrorWithCode(c, status, errType, errType, errMsg, streamStarted, false)
 }
 
 func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, string) {
@@ -3520,9 +3521,7 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		h.errorResponse(c, status, errType, message)
 		return
 	}
-	c.JSON(status, gin.H{"error": gin.H{
-		"type": errType, "code": code, "message": message,
-	}})
+	h.errorResponseWithCode(c, status, errType, code, message)
 }
 
 func (h *OpenAIGatewayHandler) ensureOpenAIStreamReadErrorResponse(c *gin.Context, err error, streamStarted bool) bool {
@@ -3572,7 +3571,7 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 	if c.Writer.Written() && !imageKeepalivePaddingOnly {
 		streamStarted = true
 	}
-	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
+	h.handleStreamingAwareErrorWithCode(c, http.StatusBadGateway, "upstream_error", "upstream_error", "Upstream request failed", streamStarted, false)
 	return true
 }
 
@@ -3658,20 +3657,23 @@ func openAIFirstOutputFailoverExhausted(failoverErr *service.UpstreamFailoverErr
 
 // errorResponse returns OpenAI API format error response
 func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
+	h.errorResponseWithCode(c, status, errType, "", message)
+}
+
+func (h *OpenAIGatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string) {
 	// body-signal compact 心跳可能已把响应头提交为 200：JSON 错误体会与已
 	// 提交的 SSE 流交错，必须降级为 response.failed 终止事件（#3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		service.MarkOpsStreamError(c, errType, message, status)
-		if writeResponsesFailedSSE(c, errType, "", message) {
+		if writeResponsesFailedSSE(c, errType, code, message) {
 			return
 		}
 	}
-	c.JSON(status, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	errorObject := gin.H{"type": errType, "message": message}
+	if code != "" {
+		errorObject["code"] = code
+	}
+	c.JSON(status, gin.H{"error": errorObject})
 }
 
 // openAICompactKeepaliveInterval 复用流式 keepalive 配置作为 compact 下游

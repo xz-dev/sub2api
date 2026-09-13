@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -1977,11 +1978,13 @@ type openAIHTTPPassthroughFailoverUpstream struct {
 	service.HTTPUpstream
 	mu         sync.Mutex
 	accountIDs []int64
+	atTimes    []time.Time
 }
 
 func (u *openAIHTTPPassthroughFailoverUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
+	u.atTimes = append(u.atTimes, time.Now())
 	u.mu.Unlock()
 	return &http.Response{
 		StatusCode: http.StatusBadGateway,
@@ -1994,6 +1997,12 @@ func (u *openAIHTTPPassthroughFailoverUpstream) calls() []int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]int64(nil), u.accountIDs...)
+}
+
+func (u *openAIHTTPPassthroughFailoverUpstream) callTimes() []time.Time {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]time.Time(nil), u.atTimes...)
 }
 
 type openAIHTTPPassthroughAuthFailoverUpstream struct {
@@ -2242,23 +2251,32 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 		cfg,
 	)
 
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.2","input":"hello","stream":false}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
-		ID: 1803, GroupID: &groupID,
-		User:  &service.User{ID: 1703, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+	synctest.Test(t, func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(`{"model":"gpt-5.2","input":"hello","stream":false}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+			ID: 1803, GroupID: &groupID,
+			User:  &service.User{ID: 1703, Status: service.StatusActive},
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		})
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
+
+		start := time.Now()
+		h.Responses(c)
+		returnedAt := time.Now()
+
+		require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
+		require.Equal(t, http.StatusBadGateway, rec.Code)
+		require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+		require.Equal(t, "Upstream service temporarily unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+		times := upstream.callTimes()
+		require.Len(t, times, 3)
+		require.Equal(t, time.Duration(0), times[0].Sub(start))
+		require.Equal(t, 500*time.Millisecond, times[1].Sub(times[0]))
+		require.Equal(t, times[2], returnedAt)
 	})
-	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
-
-	h.Responses(c)
-
-	require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
-	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
-	require.Equal(t, "Upstream service temporarily unavailable", gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
 }
 
 func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHealthyAccount(t *testing.T) {

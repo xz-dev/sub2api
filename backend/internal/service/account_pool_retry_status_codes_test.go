@@ -47,6 +47,15 @@ func TestGetPoolModeRetryStatusCodes(t *testing.T) {
 			expected: []int{},
 		},
 		{
+			name: "null_value_returns_nil",
+			account: &Account{
+				Credentials: map[string]any{
+					"pool_mode_retry_status_codes": nil,
+				},
+			},
+			expected: nil,
+		},
+		{
 			name: "float64_values_from_json_are_normalized",
 			account: &Account{
 				Credentials: map[string]any{
@@ -174,7 +183,27 @@ func TestIsPoolModeRetryableStatus_Account(t *testing.T) {
 			expected:   true,
 		},
 		{
-			name: "empty_list_disables_all_default_codes",
+			name: "empty_list_disables_default_401",
+			account: &Account{
+				Credentials: map[string]any{
+					"pool_mode_retry_status_codes": []any{},
+				},
+			},
+			statusCode: 401,
+			expected:   false,
+		},
+		{
+			name: "empty_list_disables_default_403",
+			account: &Account{
+				Credentials: map[string]any{
+					"pool_mode_retry_status_codes": []any{},
+				},
+			},
+			statusCode: 403,
+			expected:   false,
+		},
+		{
+			name: "empty_list_disables_default_429",
 			account: &Account{
 				Credentials: map[string]any{
 					"pool_mode_retry_status_codes": []any{},
@@ -182,6 +211,16 @@ func TestIsPoolModeRetryableStatus_Account(t *testing.T) {
 			},
 			statusCode: 429,
 			expected:   false,
+		},
+		{
+			name: "null_value_uses_default_401",
+			account: &Account{
+				Credentials: map[string]any{
+					"pool_mode_retry_status_codes": nil,
+				},
+			},
+			statusCode: 401,
+			expected:   true,
 		},
 	}
 

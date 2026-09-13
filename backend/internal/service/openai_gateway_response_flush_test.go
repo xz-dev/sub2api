@@ -18,24 +18,26 @@ import (
 )
 
 type openAIResponseFlushRecorder struct {
-	header          http.Header
-	mu              sync.Mutex
-	body            bytes.Buffer
-	status          int
-	writes          int
-	failAfterWrites int
-	flushSnapshots  []string
-	flushEvents     chan int
-	blockFlush      int
-	flushBlocked    chan struct{}
-	releaseFlush    <-chan struct{}
+	header           http.Header
+	mu               sync.Mutex
+	body             bytes.Buffer
+	status           int
+	writes           int
+	failAfterWrites  int
+	flushSnapshots   []string
+	flushEvents      chan int
+	clientDisconnect chan struct{}
+	blockFlush       int
+	flushBlocked     chan struct{}
+	releaseFlush     <-chan struct{}
 }
 
 func newOpenAIResponseFlushRecorder() *openAIResponseFlushRecorder {
 	return &openAIResponseFlushRecorder{
-		header:          make(http.Header),
-		failAfterWrites: -1,
-		flushEvents:     make(chan int, 16),
+		header:           make(http.Header),
+		failAfterWrites:  -1,
+		flushEvents:      make(chan int, 16),
+		clientDisconnect: make(chan struct{}, 1),
 	}
 }
 
@@ -55,6 +57,10 @@ func (w *openAIResponseFlushRecorder) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.failAfterWrites >= 0 && w.writes >= w.failAfterWrites {
+		select {
+		case w.clientDisconnect <- struct{}{}:
+		default:
+		}
 		return 0, errors.New("client disconnected")
 	}
 	w.writes++
@@ -589,6 +595,67 @@ func TestOpenAIResponseFlush_ClientDisconnectStillDrainsUsage(t *testing.T) {
 	require.Len(t, flushes, 1)
 }
 
+func TestOpenAIResponseFlush_ClientDisconnectAfterBareErrorStillDrainsFailedUsage(t *testing.T) {
+	first := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n"
+	second := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"second\"}\n\n"
+	failure := strings.Join([]string{
+		`data: {"type":"error","error":{"code":"server_error","message":"bare failure"}}`,
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"authoritative failure"},"usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}}}`,
+	}, "\n\n") + "\n\n"
+
+	t.Run("synchronous", func(t *testing.T) {
+		recorder := newOpenAIResponseFlushRecorder()
+		recorder.failAfterWrites = 1
+		result, err := runOpenAIResponseFlushTestWithAccount(recorder, io.NopCloser(strings.NewReader(first+second+failure)), config.GatewayConfig{}, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "upstream response failed")
+		require.NotNil(t, result)
+		require.Equal(t, 9, result.usage.InputTokens)
+		require.Equal(t, 2, result.usage.OutputTokens)
+		require.Equal(t, 1, result.usage.CacheReadInputTokens)
+		body, _ := recorder.snapshot()
+		require.Equal(t, first, body)
+	})
+
+	t.Run("asynchronous", func(t *testing.T) {
+		allowSecond := make(chan struct{})
+		allowFailure := make(chan struct{})
+		reader := &stagedOpenAISSEReadCloser{
+			segments: [][]byte{[]byte(first), []byte(second), []byte(failure)},
+			gates:    []<-chan struct{}{nil, allowSecond, allowFailure},
+		}
+		recorder := newOpenAIResponseFlushRecorder()
+		recorder.failAfterWrites = 1
+		resultCh, errCh := runOpenAIResponseFlushTestAsyncWithAccount(recorder, reader, config.GatewayConfig{StreamDataIntervalTimeout: 30}, &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey})
+
+		waitOpenAIResponseFlushCount(t, recorder, 1)
+		close(allowSecond)
+		waitOpenAIResponseFlushSignal(t, recorder.clientDisconnect)
+		close(allowFailure)
+
+		var result *openaiStreamingResult
+		var err error
+		select {
+		case result = <-resultCh:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for streaming result")
+		}
+		select {
+		case err = <-errCh:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for streaming error")
+		}
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "upstream response failed")
+		require.NotNil(t, result)
+		require.Equal(t, 9, result.usage.InputTokens)
+		require.Equal(t, 2, result.usage.OutputTokens)
+		require.Equal(t, 1, result.usage.CacheReadInputTokens)
+		body, _ := recorder.snapshot()
+		require.Equal(t, first, body)
+	})
+}
+
 func runOpenAIResponseFlushTest(recorder *openAIResponseFlushRecorder, body io.ReadCloser, gatewayCfg config.GatewayConfig) (*openaiStreamingResult, error) {
 	return runOpenAIResponseFlushTestWithAccount(recorder, body, gatewayCfg, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
 }
@@ -607,6 +674,17 @@ func runOpenAIResponseFlushTestWithAccount(recorder *openAIResponseFlushRecorder
 		Body:       body,
 	}
 	return svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "gpt-5", "gpt-5")
+}
+
+func runOpenAIResponseFlushTestAsyncWithAccount(recorder *openAIResponseFlushRecorder, body io.ReadCloser, gatewayCfg config.GatewayConfig, account *Account) (<-chan *openaiStreamingResult, <-chan error) {
+	resultCh := make(chan *openaiStreamingResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := runOpenAIResponseFlushTestWithAccount(recorder, body, gatewayCfg, account)
+		resultCh <- result
+		errCh <- err
+	}()
+	return resultCh, errCh
 }
 
 func runOpenAIResponseFlushTestAsync(recorder *openAIResponseFlushRecorder, body io.ReadCloser, gatewayCfg config.GatewayConfig) (<-chan *openaiStreamingResult, <-chan error) {

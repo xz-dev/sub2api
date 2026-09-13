@@ -368,7 +368,25 @@ func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	return body
 }
 
-func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte, fallbackMessage string) []byte {
+func openAIWSHTTPBridgeClientFailure(statusCode int) (string, string) {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return "upstream_error", "Upstream authentication failed"
+	case http.StatusForbidden:
+		return "upstream_error", "Upstream access denied"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error", "Upstream rate limit exceeded"
+	case 529:
+		return "upstream_error", "Upstream service overloaded"
+	default:
+		if statusCode >= 500 {
+			return "upstream_error", "Upstream service temporarily unavailable"
+		}
+		return "upstream_error", "Upstream request failed"
+	}
+}
+
+func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte, fallbackCode, fallbackMessage string, fallbackStatus int) []byte {
 	errorType := strings.TrimSpace(gjson.GetBytes(source, "error.type").String())
 	if errorType == "" {
 		errorType = strings.TrimSpace(gjson.GetBytes(source, "response.error.type").String())
@@ -376,6 +394,9 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 	code := strings.TrimSpace(gjson.GetBytes(source, "error.code").String())
 	if code == "" {
 		code = strings.TrimSpace(gjson.GetBytes(source, "response.error.code").String())
+	}
+	if code == "" {
+		code = strings.TrimSpace(fallbackCode)
 	}
 	if code == "" {
 		code = "upstream_error"
@@ -388,6 +409,9 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 		message = "Upstream response failed"
 	}
 	errorBody := map[string]any{"code": code, "message": message}
+	if fallbackStatus > 0 {
+		errorBody["status_code"] = fallbackStatus
+	}
 	if errorType != "" {
 		errorBody["type"] = errorType
 	}
@@ -603,9 +627,10 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if account.Platform != PlatformGrok && (shouldFailover || shouldCooldownOpenAITransientUpstreamError(resp.StatusCode, respBody)) {
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, actualModel)
 		}
-		clientError := buildOpenAIWSHTTPBridgeErrorEvent(resp.StatusCode, upstreamMsg)
+		failureCode, failureMessage := openAIWSHTTPBridgeClientFailure(resp.StatusCode)
+		clientError := buildOpenAIWSHTTPBridgeFailedEvent("", originalModel, nil, failureCode, failureMessage, resp.StatusCode)
 		if writeErr := writeClientMessage(clientError); writeErr == nil {
-			markOpenAIWSClientVisibleFailure(c, "error", clientError)
+			markOpenAIWSClientVisibleFailure(c, "response.failed", clientError)
 		}
 		return nil, fmt.Errorf("upstream http bridge error: status=%d message=%s", resp.StatusCode, upstreamMsg)
 	}
@@ -708,7 +733,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if clientDisconnected {
 			return nil
 		}
-		clientMessage := buildOpenAIWSHTTPBridgeFailedEvent(responseID, originalModel, bareErrorPayload, bareErrorMessage)
+		clientMessage := buildOpenAIWSHTTPBridgeFailedEvent(responseID, originalModel, bareErrorPayload, "upstream_error", bareErrorMessage, 0)
 		if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(clientMessage); changed {
 			clientMessage = rewritten
 		}

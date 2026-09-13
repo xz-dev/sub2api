@@ -62,6 +62,61 @@ func TestUpdateAccount_PreservesSensitiveCredsWhenIncomingOmits(t *testing.T) {
 	require.Equal(t, "https://new.example.com", repo.account.Credentials["base_url"])
 }
 
+func TestUpdateAccount_RemovingPoolRetryStatusOverridePreservesCredentialsAndUsesDefaults(t *testing.T) {
+	accountID := int64(205)
+	current := map[string]any{
+		"api_key":                      "synthetic-api-key",
+		"refresh_token":                "synthetic-refresh-token",
+		"access_token":                 "synthetic-access-token",
+		"base_url":                     "https://deployed.example.invalid",
+		"pool_mode":                    true,
+		"pool_mode_retry_count":        float64(1),
+		"pool_mode_retry_status_codes": []any{float64(400), float64(401), float64(403), float64(404), float64(429), float64(500), float64(502), float64(503), float64(504)},
+		"model_mapping":                map[string]any{"gpt-test": "gpt-deployed"},
+		"temp_unschedulable_enabled":   true,
+		"temp_unschedulable_rules":     []any{map[string]any{"error_code": float64(503), "keywords": []any{"synthetic"}}},
+		"custom_key":                   "custom-value",
+	}
+	repo := &updateAccountCredsRepoStub{account: &Account{
+		ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Credentials: current,
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+	incoming := map[string]any{
+		"base_url":                   current["base_url"],
+		"pool_mode":                  current["pool_mode"],
+		"pool_mode_retry_count":      current["pool_mode_retry_count"],
+		"model_mapping":              current["model_mapping"],
+		"temp_unschedulable_enabled": current["temp_unschedulable_enabled"],
+		"temp_unschedulable_rules":   current["temp_unschedulable_rules"],
+		"custom_key":                 current["custom_key"],
+	}
+
+	updated, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{Credentials: incoming})
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.Equal(t, 1, repo.updateCalls)
+
+	persisted := repo.account.Credentials
+	require.NotContains(t, persisted, "pool_mode_retry_status_codes")
+	require.Equal(t, "synthetic-api-key", persisted["api_key"])
+	require.Equal(t, "synthetic-refresh-token", persisted["refresh_token"])
+	require.Equal(t, "synthetic-access-token", persisted["access_token"])
+	expected := map[string]any{}
+	for key, value := range current {
+		if key != "pool_mode_retry_status_codes" {
+			expected[key] = value
+		}
+	}
+	require.Equal(t, expected, persisted)
+	require.True(t, repo.account.IsPoolModeRetryableStatus(401))
+	require.True(t, repo.account.IsPoolModeRetryableStatus(403))
+	require.True(t, repo.account.IsPoolModeRetryableStatus(429))
+	for _, status := range []int{400, 404, 500, 502, 503, 504} {
+		require.False(t, repo.account.IsPoolModeRetryableStatus(status), "status %d", status)
+	}
+}
+
 func TestUpdateAccount_ExplicitNewTokenOverwrites(t *testing.T) {
 	accountID := int64(203)
 	repo := &updateAccountCredsRepoStub{

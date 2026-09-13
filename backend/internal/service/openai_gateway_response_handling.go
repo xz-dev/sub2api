@@ -319,12 +319,14 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			return
 		}
 		errorEventSent = true
-		payload := `{"type":"error","sequence_number":0,"error":{"type":"upstream_error","message":` + strconv.Quote(reason) + `,"code":` + strconv.Quote(reason) + `}}`
+		// Responses error 使用顶层字段；前缀空行隔开尚未结束的上游事件，
+		// 包括 data 行已刷出、缓冲区为空的情况。没有残留事件时空行无副作用。
+		payload := `{"type":"error","sequence_number":0,"code":` + strconv.Quote(reason) + `,"message":` + strconv.Quote(reason) + `,"param":null}`
 		if err := flushBuffered(); err != nil {
 			clientDisconnected = true
 			return
 		}
-		if _, err := writePendingString("data: " + payload + "\n\n"); err != nil {
+		if _, err := writePendingString("\nevent: error\ndata: " + payload + "\n\n"); err != nil {
 			clientDisconnected = true
 			return
 		}
@@ -804,6 +806,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if streamEarlyErr != nil {
 				return resultWithUsage(), streamEarlyErr
 			}
+			if failureDelivered && !clientDisconnected {
+				_ = resp.Body.Close()
+				return finalizeStream()
+			}
 		}
 		if result, err, done := handleScanErr(documentScanner.Err()); done {
 			return result, err
@@ -882,6 +888,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			markEventProcessed(ev)
 			if streamEarlyErr != nil {
 				return resultWithUsage(), streamEarlyErr
+			}
+			if failureDelivered && !clientDisconnected {
+				_ = resp.Body.Close()
+				return finalizeStream()
 			}
 
 		case <-intervalCh:
