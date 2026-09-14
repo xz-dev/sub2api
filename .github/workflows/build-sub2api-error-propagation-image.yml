@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 72d4de509114d9b74e7be4bdf064bfad2c08ff0f
+  SOURCE_SHA: daa7a0c56534bf12450bfd77e4c1585422d2b903
   IMAGE: ghcr.io/xz-dev/sub2api
-  IMAGE_TAG: 0.2.4-error-propagation-manifest-memory-72d4de5
+  IMAGE_TAG: 0.2.4-error-propagation-manifest-memory-daa7a0c
 
 jobs:
   build:
@@ -52,12 +52,12 @@ jobs:
             GOLANG_IMAGE=docker.io/library/golang:1.27.0-alpine
             ALPINE_IMAGE=docker.io/library/alpine:3.21
             POSTGRES_IMAGE=docker.io/library/postgres:18-alpine
-            VERSION=0.2.4-error-propagation-manifest-memory-72d4de5
+            VERSION=0.2.4-error-propagation-manifest-memory-daa7a0c
             COMMIT=${{ env.SOURCE_SHA }}
           labels: |
             org.opencontainers.image.source=https://github.com/xz-dev/sub2api
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
-            org.opencontainers.image.version=0.2.4-error-propagation-manifest-memory-72d4de5
+            org.opencontainers.image.version=0.2.4-error-propagation-manifest-memory-daa7a0c
 
       - name: Record digest
         run: |
