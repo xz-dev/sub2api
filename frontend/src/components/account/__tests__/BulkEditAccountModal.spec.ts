@@ -562,6 +562,7 @@ describe('BulkEditAccountModal', () => {
     const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
     await wrapper.get('#bulk-edit-openai-endpoint-capabilities-enabled').setValue(true)
     await wrapper.get('[data-testid="bulk-edit-openai-endpoint-capability-embeddings"]').setValue(false)
+    await wrapper.get('[data-testid="bulk-edit-openai-endpoint-capability-rerank"]').setValue(false)
     await wrapper.get('[data-testid="bulk-edit-openai-endpoint-capability-seedance"]').setValue(true)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()

@@ -4565,9 +4565,8 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
-  // ponytail: keep default set (chat_completions+embeddings) implicit; any
-  // other selection writes the explicit list, incl. seedance/rerank combos
-  if (capabilities.length === 2 && !capabilities.includes('seedance') && !capabilities.includes('rerank')) {
+  // 默认能力集 (chat_completions+embeddings+rerank) 提交时删除键，由后端默认放行
+  if (capabilities.length === 3 && !capabilities.includes('seedance')) {
     delete credentials.openai_capabilities
     return
   }

@@ -1999,11 +1999,9 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (applyOpenAIEndpointCapabilities) {
     credentials.openai_capabilities =
-      // ponytail: keep default set (chat_completions+embeddings) implicit; any
-      // other selection writes the explicit list, incl. seedance/rerank combos
-      openAIEndpointCapabilities.value.length === 2 &&
-      !openAIEndpointCapabilities.value.includes('seedance') &&
-      !openAIEndpointCapabilities.value.includes('rerank')
+      // 默认能力集 (chat_completions+embeddings+rerank) 提交 null，由后端默认放行
+      openAIEndpointCapabilities.value.length === 3 &&
+      !openAIEndpointCapabilities.value.includes('seedance')
         ? null
         : [...openAIEndpointCapabilities.value]
     credentialsChanged = true
