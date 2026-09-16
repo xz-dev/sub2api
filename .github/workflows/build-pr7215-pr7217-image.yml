@@ -1,0 +1,64 @@
+name: Build candidate
+
+on:
+  push:
+    branches:
+      - ci/pr7215-pr7217-image
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-pr7215-pr7217-image
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 9ffdd5fdbe638643e928d65f2f8d981c7a47463f
+  IMAGE: ghcr.io/xz-dev/sub2api
+  IMAGE_TAG: 0.2.5-pr7215-pr7217-9ffdd5f
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push candidate
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            NODE_IMAGE=docker.io/library/node:24-alpine
+            GOLANG_IMAGE=docker.io/library/golang:1.27.0-alpine
+            ALPINE_IMAGE=docker.io/library/alpine:3.21
+            POSTGRES_IMAGE=docker.io/library/postgres:18-alpine
+            VERSION=0.2.4-error-propagation-manifest-memory-daa7a0c
+            COMMIT=${{ env.SOURCE_SHA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/xz-dev/sub2api
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+            org.opencontainers.image.version=0.2.5-pr7215-pr7217-9ffdd5f
+
+      - name: Record digest
+        run: |
+          printf 'Digest: `%s`\n' '${{ steps.build.outputs.digest }}' >> "$GITHUB_STEP_SUMMARY"
