@@ -3,7 +3,7 @@ name: Build candidate
 on:
   push:
     branches:
-      - ci/pr7215-pr7217-image
+      - ci/pr7215-pr7217-rerank-image
   workflow_dispatch:
 
 permissions:
@@ -11,13 +11,13 @@ permissions:
   packages: write
 
 concurrency:
-  group: build-pr7215-pr7217-image
+  group: build-pr7215-pr7217-rerank-image
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 9ffdd5fdbe638643e928d65f2f8d981c7a47463f
+  SOURCE_SHA: 30963c9770cd64724492d13e827eafb3c9845952
   IMAGE: ghcr.io/xz-dev/sub2api
-  IMAGE_TAG: 0.2.5-pr7215-pr7217-9ffdd5f
+  IMAGE_TAG: 0.2.5-pr7215-pr7217-rerank-30963c9
 
 jobs:
   build:
@@ -52,12 +52,12 @@ jobs:
             GOLANG_IMAGE=docker.io/library/golang:1.27.0-alpine
             ALPINE_IMAGE=docker.io/library/alpine:3.21
             POSTGRES_IMAGE=docker.io/library/postgres:18-alpine
-            VERSION=0.2.4-error-propagation-manifest-memory-daa7a0c
+            VERSION=0.2.5-pr7215-pr7217-rerank-30963c9
             COMMIT=${{ env.SOURCE_SHA }}
           labels: |
             org.opencontainers.image.source=https://github.com/xz-dev/sub2api
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
-            org.opencontainers.image.version=0.2.5-pr7215-pr7217-9ffdd5f
+            org.opencontainers.image.version=0.2.5-pr7215-pr7217-rerank-30963c9
 
       - name: Record digest
         run: |
