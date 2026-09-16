@@ -368,7 +368,7 @@ func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	return body
 }
 
-func openAIWSHTTPBridgeClientFailure(statusCode int) (string, string) {
+func openAIWSHTTPBridgeClientFailure(statusCode int, upstreamMsg string) (string, string) {
 	switch statusCode {
 	case http.StatusUnauthorized:
 		return "upstream_error", "Upstream authentication failed"
@@ -381,6 +381,11 @@ func openAIWSHTTPBridgeClientFailure(statusCode int) (string, string) {
 	default:
 		if statusCode >= 500 {
 			return "upstream_error", "Upstream service temporarily unavailable"
+		}
+		// 4xx 是确定性客户端错误，透传上游（已脱敏）诊断信息，
+		// 让调用方拿到可修复的线索（如 "text content is empty"）。
+		if statusCode >= 400 && statusCode < 500 && upstreamMsg != "" {
+			return "invalid_request_error", upstreamMsg
 		}
 		return "upstream_error", "Upstream request failed"
 	}
@@ -628,7 +633,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if account.Platform != PlatformGrok && (shouldFailover || shouldCooldownOpenAITransientUpstreamError(resp.StatusCode, respBody)) {
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, actualModel)
 		}
-		failureCode, failureMessage := openAIWSHTTPBridgeClientFailure(resp.StatusCode)
+		failureCode, failureMessage := openAIWSHTTPBridgeClientFailure(resp.StatusCode, upstreamMsg)
 		clientError := buildOpenAIWSHTTPBridgeFailedEvent("", originalModel, nil, failureCode, failureMessage, resp.StatusCode)
 		if writeErr := writeClientMessage(clientError); writeErr == nil {
 			markOpenAIWSClientVisibleFailure(c, "response.failed", clientError)
