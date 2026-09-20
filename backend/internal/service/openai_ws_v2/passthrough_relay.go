@@ -24,6 +24,10 @@ type FrameConn interface {
 	Close() error
 }
 
+type PingableFrameConn interface {
+	Ping(ctx context.Context) error
+}
+
 type Usage struct {
 	InputTokens              int
 	ImageInputTokens         int
@@ -74,6 +78,8 @@ type RelayOptions struct {
 	WriteTimeout                    time.Duration
 	IdleTimeout                     time.Duration
 	UpstreamDrainTimeout            time.Duration
+	DownstreamPingInterval          time.Duration
+	DownstreamPingTimeout           time.Duration
 	FirstTurnStartedAt              time.Time
 	TakeNextTurnStartedAt           func() time.Time
 	FirstMessageType                coderws.MessageType
@@ -176,6 +182,11 @@ func Relay(
 	if drainTimeout <= 0 {
 		drainTimeout = 1200 * time.Millisecond
 	}
+	downstreamPingInterval := options.DownstreamPingInterval
+	downstreamPingTimeout := options.DownstreamPingTimeout
+	if downstreamPingInterval > 0 && downstreamPingTimeout <= 0 {
+		downstreamPingTimeout = 5 * time.Second
+	}
 	firstMessageType := options.FirstMessageType
 	if firstMessageType != coderws.MessageBinary {
 		firstMessageType = coderws.MessageText
@@ -199,6 +210,7 @@ func Relay(
 	markActivity := func() {
 		lastActivity.Store(nowFn().UnixNano())
 	}
+	lastDownstreamWrite := atomic.Int64{}
 
 	writeUpstream := func(msgType coderws.MessageType, payload []byte) error {
 		writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
@@ -239,7 +251,11 @@ func Relay(
 		// 分支的显式 Close/CloseNow 兜底。
 		writeCtx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 		defer cancel()
-		return clientConn.WriteFrame(writeCtx, msgType, payload)
+		if err := clientConn.WriteFrame(writeCtx, msgType, payload); err != nil {
+			return err
+		}
+		lastDownstreamWrite.Store(nowFn().UnixNano())
+		return nil
 	}
 
 	clientToUpstreamFrames := &atomic.Int64{}
@@ -280,14 +296,33 @@ func Relay(
 	clientToUpstreamFrames.Add(1)
 	markActivity()
 
-	exitCh := make(chan relayExitSignal, 3)
+	exitCh := make(chan relayExitSignal, 4)
 	dropDownstreamWrites := atomic.Bool{}
 	clientReaderStarted := atomic.Bool{}
+	downstreamKeepaliveStarted := atomic.Bool{}
 	startClientReader := func() {
 		if !clientReaderStarted.CompareAndSwap(false, true) {
 			return
 		}
 		go runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeClientFrameUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+	}
+	startDownstreamKeepalive := func() {
+		if downstreamPingInterval <= 0 {
+			return
+		}
+		if !downstreamKeepaliveStarted.CompareAndSwap(false, true) {
+			return
+		}
+		go runDownstreamKeepalive(
+			relayCtx,
+			clientConn,
+			nowFn,
+			downstreamPingInterval,
+			downstreamPingTimeout,
+			&lastDownstreamWrite,
+			onTrace,
+			exitCh,
+		)
 	}
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
@@ -311,6 +346,7 @@ func Relay(
 				if options.StartClientAfterFirstDownstream {
 					startClientReader()
 				}
+				startDownstreamKeepalive()
 			},
 			&dropDownstreamWrites,
 			upstreamToClientFrames,
@@ -701,6 +737,75 @@ func runIdleWatchdog(
 			})
 			exitCh <- relayExitSignal{stage: "idle_timeout", err: context.DeadlineExceeded}
 			return
+		}
+	}
+}
+
+func runDownstreamKeepalive(
+	ctx context.Context,
+	clientConn FrameConn,
+	nowFn func() time.Time,
+	pingInterval time.Duration,
+	pingTimeout time.Duration,
+	lastDownstreamWrite *atomic.Int64,
+	onTrace func(event RelayTraceEvent),
+	exitCh chan<- relayExitSignal,
+) {
+	if pingInterval <= 0 || lastDownstreamWrite == nil {
+		return
+	}
+	pingable, ok := clientConn.(PingableFrameConn)
+	if !ok {
+		emitRelayTrace(onTrace, RelayTraceEvent{
+			Stage:     "downstream_ping_unsupported",
+			Direction: "downstream_keepalive",
+		})
+		return
+	}
+	if pingTimeout <= 0 {
+		pingTimeout = 5 * time.Second
+	}
+	emitRelayTrace(onTrace, RelayTraceEvent{
+		Stage:     "downstream_ping_started",
+		Direction: "downstream_keepalive",
+	})
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			last := lastDownstreamWrite.Load()
+			if last == 0 || nowFn().Sub(time.Unix(0, last)) < pingInterval {
+				continue
+			}
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := pingable.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				emitRelayTrace(onTrace, RelayTraceEvent{
+					Stage:           "downstream_ping_failed",
+					Direction:       "downstream_keepalive",
+					Error:           err.Error(),
+					Graceful:        true,
+					WroteDownstream: true,
+				})
+				exitCh <- relayExitSignal{
+					stage:           "read_client",
+					err:             err,
+					graceful:        true,
+					wroteDownstream: true,
+				}
+				return
+			}
+			emitRelayTrace(onTrace, RelayTraceEvent{
+				Stage:           "downstream_ping_ok",
+				Direction:       "downstream_keepalive",
+				Graceful:        true,
+				WroteDownstream: true,
+			})
 		}
 	}
 }
