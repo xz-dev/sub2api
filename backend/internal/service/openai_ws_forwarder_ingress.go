@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -483,11 +484,39 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}, nil
 	}
 
+	lastDownstreamWrite := atomic.Int64{}
+	startedKeepalive := atomic.Bool{}
+	keepaliveCtx, keepaliveCancel := context.WithCancel(ctx)
+	defer keepaliveCancel()
+	pingInterval := s.openAIWSPassthroughDownstreamPingInterval()
+	pingTimeout := s.openAIWSPassthroughDownstreamPingTimeout()
+	// 与 WS v2 passthrough relay 同一套下游 Ping 保活：长静默推理周期内
+	// 空闲敏感的中间代理（APISIX proxy_read_timeout / Cloudflare 边）会在
+	// response.completed 前把下游 WS 硬切成 1006。首笔下游写成功之后才武装，
+	// 与 #3171/#3172 的语义一致；ping 失败按客户端断开处理。
+	startDownstreamKeepalive := func() {
+		if pingInterval <= 0 || !startedKeepalive.CompareAndSwap(false, true) {
+			return
+		}
+		go runOpenAIWSIngressDownstreamKeepalive(
+			keepaliveCtx,
+			clientConn,
+			pingInterval,
+			pingTimeout,
+			&lastDownstreamWrite,
+			account,
+		)
+	}
 	writeClientMessage := func(message []byte) error {
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
 		message = restoreCodexToolNamesFromContext(c, message)
-		return clientConn.Write(writeCtx, coderws.MessageText, message)
+		if err := clientConn.Write(writeCtx, coderws.MessageText, message); err != nil {
+			return err
+		}
+		lastDownstreamWrite.Store(time.Now().UnixNano())
+		startDownstreamKeepalive()
+		return nil
 	}
 
 	readClientMessage := func() ([]byte, error) {
@@ -1953,5 +1982,52 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			unpinSessionConn(sessionConnID)
 		}
 		turn++
+	}
+}
+
+// runOpenAIWSIngressDownstreamKeepalive 与 openai_ws_v2 的
+// runDownstreamKeepalive 行为一致：首笔下游业务帧之后，客户端侧长时间无
+// 写出时按 interval 主动 Ping，等待 Pong 超过 timeout 视为客户端断开。
+// Ping 帧本身不重置 APISIX/边缘的读超时方向，但能让中间盒在"上游静默、
+// 下游也静默"的长推理窗口里看到持续的双向流量，避免被按空闲切断（1006）。
+func runOpenAIWSIngressDownstreamKeepalive(
+	ctx context.Context,
+	clientConn *coderws.Conn,
+	pingInterval time.Duration,
+	pingTimeout time.Duration,
+	lastDownstreamWrite *atomic.Int64,
+	account *Account,
+) {
+	if pingInterval <= 0 || clientConn == nil || lastDownstreamWrite == nil {
+		return
+	}
+	if pingTimeout <= 0 {
+		pingTimeout = 5 * time.Second
+	}
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	logOpenAIWSModeDebug("ingress_ws_downstream_ping_started account_id=%d interval_s=%d", accountID, int(pingInterval.Seconds()))
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			last := lastDownstreamWrite.Load()
+			if last == 0 || time.Since(time.Unix(0, last)) < pingInterval {
+				continue
+			}
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := clientConn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				logOpenAIWSModeInfo("ingress_ws_downstream_ping_failed account_id=%d cause=%s", accountID, truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen))
+				return
+			}
+			logOpenAIWSModeDebug("ingress_ws_downstream_ping_ok account_id=%d", accountID)
+		}
 	}
 }
