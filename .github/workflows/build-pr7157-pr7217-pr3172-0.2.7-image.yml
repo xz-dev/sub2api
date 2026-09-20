@@ -3,7 +3,7 @@ name: Build candidate
 on:
   push:
     branches:
-      - ci/pr7217-pr3172-rerank-0.2.7-image
+      - ci/pr7157-pr7217-pr3172-0.2.7-image
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,11 @@ permissions:
   packages: write
 
 concurrency:
-  group: build-pr7217-pr3172-rerank-0.2.7-image
+  group: build-pr7157-pr7217-pr3172-0.2.7-image
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 2df28abfaeabe62d4f87606ffa08205b8a6155ea
+  SOURCE_SHA: fc5b192a0358809ea422de4e23d49bd97ba09bad
   IMAGE: ghcr.io/xz-dev/sub2api
   IMAGE_TAG: 0.2.7-pr7157-pr7217-pr3172-2df28ab
 
