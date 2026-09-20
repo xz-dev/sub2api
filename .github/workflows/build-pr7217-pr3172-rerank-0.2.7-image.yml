@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 7859c93fb228676a019a8d252320d03ac0574f53
+  SOURCE_SHA: f368e83d5f370dbb3606d669d54493be5663f410
   IMAGE: ghcr.io/xz-dev/sub2api
-  IMAGE_TAG: 0.2.7-pr7217-pr3172-rerank-7859c93
+  IMAGE_TAG: 0.2.7-pr7217-pr3172-rerank-f368e83
 
 jobs:
   build:
@@ -52,12 +52,12 @@ jobs:
             GOLANG_IMAGE=docker.io/library/golang:1.27.0-alpine
             ALPINE_IMAGE=docker.io/library/alpine:3.21
             POSTGRES_IMAGE=docker.io/library/postgres:18-alpine
-            VERSION=0.2.7-pr7217-pr3172-rerank-7859c93
+            VERSION=0.2.7-pr7217-pr3172-rerank-f368e83
             COMMIT=${{ env.SOURCE_SHA }}
           labels: |
             org.opencontainers.image.source=https://github.com/xz-dev/sub2api
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
-            org.opencontainers.image.version=0.2.7-pr7217-pr3172-rerank-7859c93
+            org.opencontainers.image.version=0.2.7-pr7217-pr3172-rerank-f368e83
 
       - name: Record digest
         run: |
