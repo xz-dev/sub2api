@@ -675,7 +675,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
-	if status, errType, errMsg, matched := applyErrorPassthroughRule(
+	if status, errType, errMsg, rule := applyErrorPassthroughRuleWithRule(
 		c,
 		PlatformOpenAI,
 		resp.StatusCode,
@@ -683,14 +683,18 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		http.StatusBadGateway,
 		"upstream_error",
 		"Upstream request failed",
-	); matched {
+	); rule != nil {
 		MarkResponseCommitted(c)
-		c.JSON(status, gin.H{
-			"error": gin.H{
-				"type":    errType,
-				"message": errMsg,
-			},
-		})
+		if rule.PassthroughBody {
+			writeOpenAIPassthroughRuleBodyError(c, status, body, upstreamMsg, errMsg)
+		} else {
+			c.JSON(status, gin.H{
+				"error": gin.H{
+					"type":    errType,
+					"message": errMsg,
+				},
+			})
+		}
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}

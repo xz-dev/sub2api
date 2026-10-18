@@ -3745,6 +3745,15 @@ func (h *OpenAIGatewayHandler) applyOpenAIFailoverPassthroughRule(
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 
+	if rule.PassthroughBody {
+		upstreamMsg := service.SanitizeUpstreamErrorMessage(msg)
+		if !streamStarted && !service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+			service.WriteOpenAIPassthroughRuleBodyError(c, respCode, responseBody, upstreamMsg, upstreamMsg)
+			return true
+		}
+		h.handleStreamingAwareErrorWithCode(c, respCode, "upstream_error", service.ExtractUpstreamErrorCode(responseBody), upstreamMsg, true, false)
+		return true
+	}
 	h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
 	return true
 }
