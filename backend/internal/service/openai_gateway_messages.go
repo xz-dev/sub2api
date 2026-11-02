@@ -43,6 +43,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		body = sanitized
 	}
 	rememberOpenCodeInboundBody(c, body)
+	rememberOpenAISessionAffinityID(c, body, true)
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
 	// Web Search 模拟：Chat Completions 转换会丢掉 web_search 工具，纯 web_search
@@ -399,6 +400,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
 		upstreamReq.Header.Set("x-codex-turn-state", compatTurnState)
 	}
+	applyOpenAISessionAffinityHeader(c, account, upstreamReq.Header)
 
 	// 7. Send request
 	proxyURL := ""

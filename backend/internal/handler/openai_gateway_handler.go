@@ -1277,8 +1277,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 	defer inflightDone()
 
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
-	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	sessionHash, promptCacheKey := resolveOpenAISessionInputs(h.gatewayService, c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(c, sessionHash, promptCacheKey, reqModel, body)
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
 		return
@@ -1555,6 +1554,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func resolveOpenAISessionInputs(gateway *service.OpenAIGatewayService, c *gin.Context, body []byte) (string, string) {
+	if gateway == nil {
+		return "", ""
+	}
+	return gateway.GenerateSessionHash(c, body), gateway.ExtractPromptCacheKey(c, body)
 }
 
 func resolveOpenAIMessagesMetadataSession(c *gin.Context, sessionHash, promptCacheKey, reqModel string, body []byte) (string, string) {
@@ -3615,6 +3621,15 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
 
+			if rule.PassthroughBody {
+				upstreamMsg := service.SanitizeUpstreamErrorMessage(msg)
+				if !streamStarted && !service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+					service.WriteOpenAIPassthroughRuleBodyError(c, respCode, responseBody, upstreamMsg, upstreamMsg)
+					return
+				}
+				h.handleStreamingAwareErrorWithCode(c, respCode, "upstream_error", service.ExtractUpstreamErrorCode(responseBody), upstreamMsg, true, false)
+				return
+			}
 			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
 			return
 		}
