@@ -1,0 +1,1 @@
+{"model":"gpt-5.1","max_output_tokens":1e3,"temperature":1.5E-7,"seed":123456789012345678901234567890,"neg":-0,"arr":[0,-1,2.50,1e+2,1E-2],"input":[{"type":"input_image","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL","detail":"high"}}]}

@@ -1,0 +1,1 @@
+{"model":"gpt-5.1","instructions":"You are a helpful assistant. This instruction text is long enough to cross the test threshold and must stay inline.","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"A large inline text value that is not media and therefore is never externalized, whatever its length is."}]}]}
