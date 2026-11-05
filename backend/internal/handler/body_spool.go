@@ -544,15 +544,18 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 }
 
 // guardDecodeK and guardFixedBytes bound the prompt guard's work on the
-// request goroutine (json.Unmarshal of the whole body into any, the segments,
-// the scan text, the preview head and the stored prompt, and in blocking mode
-// the chunks): guardDecodeK × body + guardFixedBytes. Measured in-process with
-// GC off (allocated bytes, an upper bound of the peak) after review a4a7d843
-// removed the guard's text copies: 2.98 × on the text-heavy corpus
-// (d10-utext-16, 86 % of the body is text the guard reads), at most 3.12 × on
-// 16 MiB of message text, 2.31 × (D10 text-16), 1.24 × (M0 text-16); plus
+// request goroutine (validating the body, the in-place extraction that keeps
+// the texts once plus 5 bytes per segment, the scan text, the preview head
+// and the stored prompt, and in blocking mode the chunks): guardDecodeK ×
+// body + guardFixedBytes. Measured in-process with GC off (allocated bytes,
+// an upper bound of the peak) after follow-up 6 replaced the json-into-any
+// decode (12.6 × on 16 MiB of ~85-byte items, d10-small-items-16) with the
+// in-place read: at most 3.07 × over the shapes of
+// securityaudit.TestPromptSnapshotShapeCostBounded (distinct media prompts;
+// bare one-letter strings 2.17 ×, wide System One objects 2.41 ×), 1.83 ×
+// on the text-heavy corpus d10-utext-16, 0.64 × on d10-small-items-16; plus
 // about 0.33 MiB at any size, for the 16 KiB preview head and the stored
-// prompt (at most 65,536 runes). Before the fix the text corpus took 22-28 ×.
+// prompt (at most 65,536 runes).
 const (
 	guardDecodeK    = 3.5
 	guardFixedBytes = 512 << 10

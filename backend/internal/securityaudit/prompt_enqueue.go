@@ -78,9 +78,9 @@ func (e *Enqueuer) prepare(req Request) (*preparedJob, error) {
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "snapshot_invalid"}))
 		return nil, nil
 	}
-	// A scan text of one segment is that segment, a substring of the decoded
-	// JSON string, which is at most the body; several segments are joined
-	// into a scan text of exactly its length.
+	// A scan text of one segment is that segment's own copy, at most the
+	// body; several segments are joined into a scan text of exactly its
+	// length. The body bound for one segment is kept as a margin.
 	text := int64(len(snapshot.ScanText))
 	if snapshot.MessageCount <= 1 {
 		text = max(text, int64(len(req.Body)))
