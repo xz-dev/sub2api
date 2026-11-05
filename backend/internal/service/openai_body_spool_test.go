@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,4 +106,21 @@ func TestSpoolEgressFailsClosed(t *testing.T) {
 	raw, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, "http://x/v1/responses", bytes.NewReader(skel))
 	require.NoError(t, err)
 	require.ErrorIs(t, checkSpoolEgress(raw), errSpoolEgressUnspliced)
+
+	// The egress refusal is request-scoped on every builder: a named 422,
+	// no failover error, no upstream error recorded against the account.
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = raw
+	svc := &OpenAIGatewayService{}
+	_, err = svc.doOpenAIUpstream(raw, "", &Account{ID: 7, Platform: PlatformOpenAI})
+	require.ErrorIs(t, err, errSpoolEgressUnspliced)
+	err = svc.handleOpenAIUpstreamTransportError(raw.Context(), c, &Account{ID: 7, Platform: PlatformOpenAI}, err, false)
+	var failover *UpstreamFailoverError
+	require.False(t, errors.As(err, &failover), "%v", err)
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	require.Contains(t, rec.Body.String(), `"code":"spooled_body_unsupported"`)
+	require.Contains(t, rec.Body.String(), `"hop":"sub2api"`)
+	_, recorded := c.Get(OpsUpstreamErrorsKey)
+	require.False(t, recorded)
 }

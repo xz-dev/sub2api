@@ -297,14 +297,23 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		_ = f.Close()
 		return fail(refusalFor(err, inline))
 	}
-	st.spool = sp
 	leased := ""
 	if st.lease != nil {
 		leased = st.lease.ID
 	}
+	if sp.Blobs() == 0 {
+		// Nothing was spooled: the skeleton is the body. No spool travels on,
+		// so every request builder can send it; only the ticket does.
+		_ = sp.Close()
+		sp = nil
+	} else {
+		st.spool = sp
+	}
 	c.Request.Body = pkghttputil.NewPrereadBody(skel)
 	c.Request.ContentLength = int64(len(skel))
-	c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
+	if sp != nil || leased != "" {
+		c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
+	}
 	return true
 }
 

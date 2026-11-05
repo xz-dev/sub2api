@@ -157,6 +157,10 @@ func writeTestTicket(t *testing.T, ledger string, n int) string {
 
 func newLargeBodyTestHandler(t *testing.T, upstream service.HTTPUpstream, accountType string) *OpenAIGatewayHandler {
 	t.Helper()
+	return newLargeBodyTestHandlerWithAccounts(t, upstream, largeBodyTestAccounts(accountType))
+}
+
+func largeBodyTestAccounts(accountType string) []service.Account {
 	accounts := make([]service.Account, 2)
 	for i := range accounts {
 		accounts[i] = service.Account{
@@ -175,6 +179,11 @@ func newLargeBodyTestHandler(t *testing.T, upstream service.HTTPUpstream, accoun
 			accounts[i].Extra = map[string]any{"openai_passthrough": accountType == "apikey_passthrough"}
 		}
 	}
+	return accounts
+}
+
+func newLargeBodyTestHandlerWithAccounts(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account) *OpenAIGatewayHandler {
+	t.Helper()
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.MaxBodySize = 256 << 20
 	gatewayService := service.NewOpenAIGatewayService(
