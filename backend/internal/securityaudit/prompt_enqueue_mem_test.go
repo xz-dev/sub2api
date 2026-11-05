@@ -6,6 +6,7 @@ import (
 	"runtime/metrics"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"weak"
@@ -82,4 +83,39 @@ func TestPromptServiceAsyncKeepsNoBodyAfterEnqueue(t *testing.T) {
 	close(repo.release)
 	svc.enqueueWG.Wait()
 	require.NotEmpty(t, repo.createdSnapshot.PromptHash)
+}
+
+// TestPromptServiceAsyncHoldsChargeUntilCommitDone (review a4a7d843 major):
+// the snapshot handed to the commit goroutine holds all the text the guard
+// reads. Its share of the request's charge is held from Enqueue until the
+// goroutine has dropped the job, and it covers the heap the job keeps.
+func TestPromptServiceAsyncHoldsChargeUntilCommitDone(t *testing.T) {
+	repo := &blockingJobRepository{entered: make(chan struct{}), release: make(chan struct{})}
+	repo.createJob = &Job{ID: 7}
+	cfg := &fakeConfigStore{cfg: asyncConfig(), active: true}
+	svc := &PromptService{config: cfg, enqueuer: NewEnqueuer(cfg, repo, &fakePayloadStore{values: map[int64]string{}}),
+		enqueueSlots: make(chan struct{}, 1), background: context.Background()}
+
+	text := strings.Repeat("pasted text the guard reads\n", (4<<20)/28)
+	for _, segments := range []int{1, 2} {
+		parts := [][2]string{{"user", text}, {"assistant", text}}[:segments]
+		body := responsesTextBody(parts...) // one segment: the scan text is a substring; two: joined
+		base := liveHeap() - uint64(len(body))
+		var held atomic.Int64
+		var released atomic.Bool
+		retain := func(n int64) func() {
+			held.Store(n)
+			return func() { released.Store(true) }
+		}
+		require.NoError(t, svc.Enqueue(context.Background(), Request{RequestID: "r", Protocol: "openai_responses", Body: body, RetainMemory: retain}))
+		body = nil
+		<-repo.entered
+		kept := int64(liveHeap()) - int64(base)
+		require.False(t, released.Load(), "released while the commit still holds the snapshot")
+		require.GreaterOrEqual(t, held.Load(), kept, "the hold covers the heap the job keeps")
+		repo.release <- struct{}{}
+		svc.enqueueWG.Wait()
+		require.True(t, released.Load(), "released once the commit is done")
+		repo.entered = make(chan struct{})
+	}
 }

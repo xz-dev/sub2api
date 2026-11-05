@@ -248,6 +248,24 @@ func (c *Charge) add(step int64) error {
 // Bytes is the amount charged so far.
 func (c *Charge) Bytes() int64 { return c.n.Load() }
 
+// Detach moves n bytes (at most what is charged) out of c into a separate
+// hold, so Release no longer returns them; the returned func does, once. It
+// is for memory a request hands to a goroutine that outlives it: the bytes
+// stay outstanding, with no new check, until that goroutine drops them.
+func (c *Charge) Detach(n int64) (release func()) {
+	if c == nil || n <= 0 {
+		return func() {}
+	}
+	for {
+		have := c.n.Load()
+		m := min(n, have)
+		if c.n.CompareAndSwap(have, have-m) {
+			var once sync.Once
+			return func() { once.Do(func() { c.m.outstanding.Add(-m) }) }
+		}
+	}
+}
+
 // Release returns the whole charge. Idempotent.
 func (c *Charge) Release() {
 	if c == nil {

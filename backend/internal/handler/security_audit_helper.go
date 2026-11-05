@@ -185,6 +185,7 @@ func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject m
 	if request.Stage == "" {
 		request.Stage = "http"
 	}
+	request.RetainMemory = retainRequestMemory(c)
 	return request
 }
 

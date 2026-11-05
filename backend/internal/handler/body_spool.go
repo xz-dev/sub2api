@@ -559,6 +559,23 @@ func chargeGuardDecode(c *gin.Context, promptReads func() bool, body []byte) *ca
 	return nil
 }
 
+// retainRequestMemory lets the async prompt audit keep part of this
+// request's charge for the snapshot it hands to its commit goroutine, which
+// may outlive the request (review a4a7d843 major). The bytes move out of the
+// request's charge, so the request's release no longer frees them; the
+// goroutine's release does. nil when the request is not charged.
+func retainRequestMemory(c *gin.Context) func(int64) func() {
+	v, ok := c.Get(bodySpoolStateKey)
+	if !ok {
+		return nil
+	}
+	st := v.(*bodySpoolState)
+	if st.released || st.charge == nil {
+		return nil
+	}
+	return func(n int64) func() { return st.charge.Detach(roundUpGranule(n)) }
+}
+
 // writeBodySpoolAuditRefusal writes the refusal auditBodyForSpool returned
 // for this request, if any.
 func writeBodySpoolAuditRefusal(c *gin.Context) bool {
