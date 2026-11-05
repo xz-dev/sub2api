@@ -3626,28 +3626,6 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
-	if failoverErr.IsOpenAIRequestBodyTooLarge() {
-		// An operator-configured passthrough rule wins over the built-in body
-		// limit mapping below. Failover on 413 exists because different
-		// accounts can front proxies with different body limits, so the
-		// switching itself is left intact; what the rule controls is the
-		// client-facing response once failover is exhausted. Without this
-		// check a 413 rule can never match on the native /responses path,
-		// because the body-limit branch returns before the generic rule
-		// lookup further down.
-		if h.applyOpenAIFailoverPassthroughRule(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
-			return
-		}
-		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")
-		h.handleStreamingAwareError(
-			c,
-			http.StatusRequestEntityTooLarge,
-			"invalid_request_error",
-			service.OpenAIRequestBodyTooLargeClientMessage,
-			streamStarted,
-		)
-		return
-	}
 	if failoverErr.Reason == service.OpenAIHTTPContinuationUnsupportedReason {
 		message := strings.TrimSpace(failoverErr.ClientMessage)
 		if message == "" {

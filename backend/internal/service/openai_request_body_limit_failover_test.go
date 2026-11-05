@@ -16,7 +16,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestOpenAIRequestBodyLimitFailover_HTTP413SwitchesAccountsBeforeWrite(t *testing.T) {
+// Every provider 413 is request-scoped (large-request-capacity D5, user
+// decision): even with pool-mode retry configured for 413 it is not failed
+// over, and status, headers and body reach the client unchanged.
+func TestOpenAIRequestBodyLimit_HTTP413IsRequestScopedPassthrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	requestBody := []byte(`{"model":"gpt-5.2","stream":false,"input":"hello"}`)
 
@@ -40,9 +43,11 @@ func TestOpenAIRequestBodyLimitFailover_HTTP413SwitchesAccountsBeforeWrite(t *te
 				},
 				Body: body,
 			}}
+			cfg := &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}}
 			svc := &OpenAIGatewayService{
-				cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
-				httpUpstream: upstream,
+				cfg:                  cfg,
+				httpUpstream:         upstream,
+				responseHeaderFilter: compileResponseHeaderFilter(cfg),
 			}
 			account := &Account{
 				ID:          161,
@@ -69,17 +74,13 @@ func TestOpenAIRequestBodyLimitFailover_HTTP413SwitchesAccountsBeforeWrite(t *te
 			result, err := svc.Forward(context.Background(), c, account, requestBody)
 
 			require.Nil(t, result)
+			require.Error(t, err)
 			var failoverErr *UpstreamFailoverError
-			require.ErrorAs(t, err, &failoverErr)
-			require.Equal(t, http.StatusRequestEntityTooLarge, failoverErr.StatusCode)
-			require.Equal(t, GatewayFailureScopeAccount, failoverErr.Scope)
-			require.Equal(t, GatewayFailureReason("openai_request_body_too_large"), failoverErr.Reason)
-			require.Equal(t, NextAccountRetry, failoverErr.NextAccountAction)
-			require.Equal(t, http.StatusRequestEntityTooLarge, failoverErr.ClientStatusCode)
-			require.Equal(t, "Request payload is too large", failoverErr.ClientMessage)
-			require.False(t, failoverErr.RetryableOnSameAccount, "a body limit requires another account, not another attempt on the same account")
-			require.False(t, c.Writer.Written(), "account failover must happen before downstream output is committed")
-			require.Empty(t, rec.Body.String())
+			require.False(t, errors.As(err, &failoverErr), "a provider 413 is never failed over")
+			require.True(t, c.Writer.Written())
+			require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+			require.Equal(t, upstreamBody, rec.Body.String())
+			require.Equal(t, "rid-body-limit", rec.Header().Get("X-Request-Id"))
 			require.True(t, body.closed)
 			if passthrough {
 				require.Equal(t, requestBody, upstream.lastBody)
