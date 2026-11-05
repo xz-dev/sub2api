@@ -103,9 +103,11 @@ func TestBodySpoolPassthroughLiveK(t *testing.T) {
 		t.Skip("set SUB2API_KSKEL_LIVE=1 (and optionally SUB2API_KSKEL_BODIES) to measure passthrough k")
 	}
 	gin.SetMode(gin.TestMode)
+	// Bodies are built one at a time: keeping all of them live would raise
+	// the GC goal and let garbage count in the peak.
 	type sample struct {
 		name  string
-		body  []byte
+		body  func() []byte
 		codex bool
 	}
 	var samples []sample
@@ -128,20 +130,25 @@ func TestBodySpoolPassthroughLiveK(t *testing.T) {
 		if only != "" && !strings.Contains(","+only+",", ","+sh.name+",") {
 			continue
 		}
-		samples = append(samples, sample{sh.name, passthroughKBody(size, sh.root, sh.item, sh.beforeLast, sh.stream), sh.codex})
+		samples = append(samples, sample{sh.name, func() []byte {
+			return passthroughKBody(size, sh.root, sh.item, sh.beforeLast, sh.stream)
+		}, sh.codex})
 	}
 	for _, path := range strings.Split(os.Getenv("SUB2API_KSKEL_BODIES"), ",") {
 		if path == "" {
 			continue
 		}
-		body, err := os.ReadFile(path)
-		require.NoError(t, err)
-		samples = append(samples, sample{filepath.Base(path), body, false})
+		samples = append(samples, sample{filepath.Base(path), func() []byte {
+			body, err := os.ReadFile(path)
+			require.NoError(t, err)
+			return body
+		}, false})
 	}
 	for _, s := range samples {
+		body := s.body()
 		worst := 0.0
 		for run := 1; run <= 3; run++ {
-			upstream := &passthroughKUpstream{sse: gjson.GetBytes(s.body, "stream").Bool()}
+			upstream := &passthroughKUpstream{sse: gjson.GetBytes(body, "stream").Bool()}
 			accounts := largeBodyTestAccounts(accountType)
 			for i := range accounts {
 				if accounts[i].Extra != nil {
@@ -150,7 +157,7 @@ func TestBodySpoolPassthroughLiveK(t *testing.T) {
 			}
 			h := newLargeBodyTestHandlerWithAccounts(t, upstream, accounts)
 			enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
-			c, rec := newLargeBodyTestContext("/v1/responses", s.body, "")
+			c, rec := newLargeBodyTestContext("/v1/responses", body, "")
 			if s.codex {
 				h.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
 				c.Request.Header.Set("originator", "codex_cli_rs")
@@ -159,9 +166,9 @@ func TestBodySpoolPassthroughLiveK(t *testing.T) {
 			delta := measurePeakHeap(func() { h.Responses(c); releaseRequestBodySpool(c) })
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 			require.EqualValues(t, 1, upstream.calls.Load())
-			k := float64(delta) / float64(len(s.body))
+			k := float64(delta) / float64(len(body))
 			worst = max(worst, k)
-			t.Logf("KSKEL %s run %d bytes %d forwarded %+d peak_live %.1f MiB k %.2f", s.name, run, len(s.body), upstream.forwarded.Load()-int64(len(s.body)), float64(delta)/(1<<20), k)
+			t.Logf("KSKEL %s run %d bytes %d forwarded %+d peak_live %.1f MiB k %.2f", s.name, run, len(body), upstream.forwarded.Load()-int64(len(body)), float64(delta)/(1<<20), k)
 		}
 		t.Logf("KSKEL %s %s worst %.2f (%s %.1f)", accountType, s.name, worst, boundName, bound)
 		assert.LessOrEqual(t, worst, bound, "%s %s: k above %s", accountType, s.name, boundName)
