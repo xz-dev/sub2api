@@ -38,7 +38,13 @@ type GatewayBodySpoolConfig struct {
 	// KSkel, KMem, KPath and PageCacheBound are the per-hop memory charge
 	// factors (design D4): k_skel x inline bytes on covered paths,
 	// k_path x N on fallback paths, plus k_mem x N + P_h for a ticket.
-	KSkel          float64 `mapstructure:"k_skel"`
+	KSkel float64 `mapstructure:"k_skel"`
+	// KConv is the factor of a request that a protocol converter rewrites
+	// (Responses->Chat, Responses->Anthropic, Chat->Responses, ...): the
+	// converter charges (k_conv - k) x the inline bytes on top of the
+	// request's k_skel or k_path before it allocates, and refuses bodies
+	// above S_conv (covered) or L_conv (fallback), both derived from k_conv.
+	KConv          float64 `mapstructure:"k_conv"`
 	KMem           float64 `mapstructure:"k_mem"`
 	KPath          float64 `mapstructure:"k_path"`
 	PageCacheBound int64   `mapstructure:"page_cache_bound"`
@@ -64,6 +70,7 @@ const (
 	// rounded up with ~7 % margin, within the bound 15.1.
 	// S_h = (320 - 32 - 48) / 15 = 16.0 MiB >= S.
 	DefaultBodySpoolKSkel          float64 = 15
+	DefaultBodySpoolKConv          float64 = 25
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
@@ -92,6 +99,9 @@ func (c GatewayBodySpoolConfig) Effective() GatewayBodySpoolConfig {
 	if c.KSkel <= 0 {
 		c.KSkel = DefaultBodySpoolKSkel
 	}
+	if c.KConv <= 0 {
+		c.KConv = DefaultBodySpoolKConv
+	}
 	if c.KMem <= 0 {
 		c.KMem = DefaultBodySpoolKMem
 	}
@@ -116,6 +126,7 @@ func setBodySpoolDefaults() {
 	viper.SetDefault("gateway.body_spool.ledger_dir", "")
 	viper.SetDefault("gateway.body_spool.cgroup_dir", "")
 	viper.SetDefault("gateway.body_spool.k_skel", DefaultBodySpoolKSkel)
+	viper.SetDefault("gateway.body_spool.k_conv", DefaultBodySpoolKConv)
 	viper.SetDefault("gateway.body_spool.k_mem", DefaultBodySpoolKMem)
 	viper.SetDefault("gateway.body_spool.k_path", DefaultBodySpoolKPath)
 	viper.SetDefault("gateway.body_spool.page_cache_bound", DefaultBodySpoolPageCacheBound)

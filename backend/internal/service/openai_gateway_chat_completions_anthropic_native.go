@@ -41,6 +41,10 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	// A protocol converter: the converted request's charge first (review rr3).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request

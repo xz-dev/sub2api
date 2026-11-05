@@ -140,6 +140,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		return s.forwardChatCompletionsViaNativeAnthropic(ctx, c, account, body, defaultMappedModel)
 	case APIProtocolChatCompletions:
 		if convertResponsesShape {
+			// Responses -> Chat: a protocol converter, its charge first (review rr3).
+			if err := ChargeRequestConversion(c); err != nil {
+				return nil, err
+			}
 			chatBody, err := s.convertResponsesShapedChatBody(body)
 			if err != nil {
 				return nil, err
@@ -152,6 +156,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	// Responses 端点）：走下方 Chat Completions ↔ Responses 转换链。
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
 
+	// Chat -> Responses: a protocol converter, its charge first (review rr3).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request

@@ -870,6 +870,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			// A converted request refused for memory (413 above S_conv, or 503):
+			// the refusal is written and final, no failover (review rr3).
+			if service.IsRequestConversionRefused(err) {
+				return
+			}
 			if result != nil && result.ClientDisconnect {
 				reqLog.Info("openai.client_disconnected",
 					zap.Int64("account_id", account.ID),
@@ -1462,6 +1467,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			// A converted request refused for memory (413 above S_conv, or 503):
+			// the refusal is written and final, no failover (review rr3).
+			if service.IsRequestConversionRefused(err) {
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai_messages.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),

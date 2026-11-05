@@ -300,6 +300,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 
 		if err != nil {
+			// A converted request refused for memory (413 above S_conv, or 503):
+			// the refusal is written and final, no failover (review rr3).
+			if service.IsRequestConversionRefused(err) {
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				// Can't failover if streaming content already sent

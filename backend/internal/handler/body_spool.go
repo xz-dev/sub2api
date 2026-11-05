@@ -324,6 +324,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		if r := ingestFallbackBody(c, rt, st, encoding, size, limit, k, prepaid); r != nil {
 			return fail(r)
 		}
+		setConversionCharge(c, rt, st, k, c.Request.ContentLength) // readPrereadBody set it
 		return true
 	}
 
@@ -372,6 +373,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	}
 	c.Request.Body = pkghttputil.NewPrereadBody(skel)
 	c.Request.ContentLength = int64(len(skel))
+	setConversionCharge(c, rt, st, k, max(inlineSeen, int64(len(skel))))
 	if sp != nil || leased != "" {
 		c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
 	}
@@ -390,7 +392,13 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 // (review a4a7d843 minor: with L fixed at 16 MiB, bodies from 12.6 MiB got
 // that 503 on an idle 320m hop). Above L: 413 with limit_bytes = L.
 func fallbackLimit(cfg config.GatewayBodySpoolConfig, memoryMax int64) int64 {
-	k := cfg.KPath + guardDecodeK
+	return fallbackLimitFor(cfg, memoryMax, cfg.KPath)
+}
+
+// fallbackLimitFor is fallbackLimit for a path factor kPath (k_conv gives
+// L_conv, the limit of a converted fallback request).
+func fallbackLimitFor(cfg config.GatewayBodySpoolConfig, memoryMax int64, kPath float64) int64 {
+	k := kPath + guardDecodeK
 	room := memoryMax - bodyspool.ChargeMargin - cfg.IdleBaseline - guardFixedBytes - pkghttputil.MaxRequestBodyDecoderState
 	derived := int64(float64(room)/k) - 24<<10
 	derived -= derived % bodyspool.DefaultChargeStep

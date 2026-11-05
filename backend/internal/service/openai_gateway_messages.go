@@ -71,6 +71,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		// 不支持 Responses 的其他 APIKey 账号，均将 Messages 转为 CC。
 		return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
+	// Anthropic -> Responses: a protocol converter, its charge first (review rr3).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
 
 	startTime := time.Now()

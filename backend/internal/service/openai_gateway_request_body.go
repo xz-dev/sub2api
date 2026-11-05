@@ -1438,6 +1438,9 @@ type openAIResponsesCompatibilityOptions struct {
 	// Compact marks the /responses/compact wire shape, which is left as-is
 	// by request-shape compatibility rewrites such as web_search history.
 	Compact bool
+	// ChargeConversion is the legacy-ingress rewrite's converter top-up
+	// (requestConversionCharger); nil charges nothing (a WebSocket message).
+	ChargeConversion func() error
 }
 
 func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *Account, opts openAIResponsesCompatibilityOptions) ([]byte, bool, error) {
@@ -1449,7 +1452,11 @@ func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *
 	changed := false
 	if account.IsOpenAIOAuthLike() {
 		var err error
-		normalized, changed, err = normalizeOpenAIResponsesLegacyIngress(body)
+		charge := opts.ChargeConversion
+		if charge == nil {
+			charge = noConversionCharge
+		}
+		normalized, changed, err = normalizeOpenAIResponsesLegacyIngress(body, charge)
 		if err != nil {
 			return body, false, err
 		}

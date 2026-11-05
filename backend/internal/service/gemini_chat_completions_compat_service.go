@@ -28,6 +28,10 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	account *Account,
 	body []byte,
 ) (*ForwardResult, error) {
+	// A protocol converter: the converted request's charge first (review rr3).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	var ccReq apicompat.ChatCompletionsRequest
