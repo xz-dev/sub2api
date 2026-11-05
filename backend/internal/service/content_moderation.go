@@ -821,6 +821,22 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 	return &TestContentModerationAPIKeysResult{Items: items, AuditResult: auditResult, ImageCount: imageCount}, nil
 }
 
+// ModeratesRequest reports whether Check would inspect input: risk control
+// on, moderation enabled and not off, group and model in scope. It mirrors
+// Check's gates and, like Check, treats an unavailable service or config as
+// not moderating. Allowlisted users are still inspected (log-only).
+func (s *ContentModerationService) ModeratesRequest(ctx context.Context, input ContentModerationCheckInput) bool {
+	if s == nil || s.settingRepo == nil || s.repo == nil {
+		return false
+	}
+	snapshot, err := s.loadRuntimeSnapshot(ctx)
+	if err != nil || snapshot == nil || !snapshot.riskControlEnabled {
+		return false
+	}
+	cfg := snapshot.config
+	return cfg.Enabled && cfg.Mode != ContentModerationModeOff && cfg.includesGroup(input.GroupID) && cfg.includesModel(input.Model)
+}
+
 func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (decision *ContentModerationDecision, err error) {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 	if s == nil || s.settingRepo == nil || s.repo == nil {

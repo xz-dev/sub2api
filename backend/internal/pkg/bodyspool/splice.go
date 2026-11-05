@@ -105,3 +105,40 @@ func oddBackslashes(b []byte) bool {
 	}
 	return n%2 == 1
 }
+
+// Redact returns a copy of skel for inspection outside the hop (content
+// moderation and the security audit): every marker is replaced by
+// "[spooled media: N bytes]", N being the blob's length, so no marker or
+// nonce leaves the hop and all other bytes are unchanged. reserve is called
+// with the copy's exact length before the copy is allocated.
+func (s *Spool) Redact(skel []byte, reserve func(n int64) error) ([]byte, error) {
+	var n int64
+	err := s.walk(skel, false, func(lit []byte, b *blob) {
+		n += int64(len(lit))
+		if b != nil {
+			n += int64(len(appendPlaceholder(nil, b.end-b.off)))
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if reserve != nil {
+		if err := reserve(n); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]byte, 0, n)
+	_ = s.walk(skel, false, func(lit []byte, b *blob) {
+		out = append(out, lit...)
+		if b != nil {
+			out = appendPlaceholder(out, b.end-b.off)
+		}
+	})
+	return out, nil
+}
+
+func appendPlaceholder(dst []byte, n int64) []byte {
+	dst = append(dst, "[spooled media: "...)
+	dst = strconv.AppendInt(dst, n, 10)
+	return append(dst, " bytes]"...)
+}
