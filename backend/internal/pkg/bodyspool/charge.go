@@ -245,6 +245,9 @@ func (c *Charge) add(step int64) error {
 	}
 }
 
+// Limit is memory.max as read when the charge started.
+func (c *Charge) Limit() int64 { return c.limit }
+
 // Bytes is the amount charged so far.
 func (c *Charge) Bytes() int64 { return c.n.Load() }
 
