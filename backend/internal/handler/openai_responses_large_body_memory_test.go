@@ -177,6 +177,9 @@ func largeBodyTestAccounts(accountType string) []service.Account {
 			accounts[i].Type = service.AccountTypeAPIKey
 			accounts[i].Credentials = map[string]any{"api_key": "sk-test", "base_url": "https://api.openai.com"}
 			accounts[i].Extra = map[string]any{"openai_passthrough": accountType == "apikey_passthrough"}
+			if accountType == "apikey_chat" { // Responses -> Chat Completions
+				accounts[i].Extra["openai_responses_supported"] = false
+			}
 		}
 	}
 	return accounts

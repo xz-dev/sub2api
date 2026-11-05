@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // Memory charge without double counting (design D4, task 7.2 follow-up).
@@ -297,4 +298,65 @@ func TestBodySpoolTinyRequestsBesideTicketed256MiB(t *testing.T) {
 		releaseRequestBodySpool(c)
 	}
 	require.Zero(t, rt.meter.Outstanding())
+}
+
+// panicReader yields n bytes of r and then panics.
+type panicReader struct {
+	r io.Reader
+	n int
+}
+
+func (p *panicReader) Read(b []byte) (int, error) {
+	if p.n <= 0 {
+		panic("ingest panic")
+	}
+	if len(b) > p.n {
+		b = b[:p.n]
+	}
+	n, err := p.r.Read(b)
+	p.n -= n
+	return n, err
+}
+
+// TestBodySpoolPanicDuringIngestReleases (review minor): a panic while the
+// body is ingested still drops the charge, the ticket lease and the spool,
+// through the middleware and through the handler's own ingest.
+func TestBodySpoolPanicDuringIngestReleases(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, entry := range []string{"middleware", "handler"} {
+		t.Run(entry, func(t *testing.T) {
+			h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
+			env := enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
+			ticket := writeTestTicket(t, env.ledger, 1<<20)
+			meter := bodySpoolRuntimeFor(h.cfg).meter
+			body := largeResponsesImagesBody(1 << 20)
+			c, _ := newLargeBodyTestContext("/v1/responses", body, ticket)
+			c.Request.Body = io.NopCloser(&panicReader{r: bytes.NewReader(body), n: 300 << 10})
+			func() {
+				defer func() {
+					r := recover()
+					if entry == "middleware" {
+						require.Equal(t, "ingest panic", r)
+					} // the Responses handler recovers its own panics
+				}()
+				if entry == "middleware" {
+					BodySpoolIngest(h.cfg)(c)
+				} else {
+					h.Responses(c)
+				}
+			}()
+			require.Zero(t, meter.Outstanding(), "charge released")
+			v, ok := c.Get(bodySpoolStateKey)
+			require.True(t, ok)
+			st := v.(*bodySpoolState)
+			require.True(t, st.released)
+			require.NotNil(t, st.file)
+			_, err := st.file.ReadAt(make([]byte, 1), 0)
+			require.Error(t, err, "spool file closed")
+			f, err := os.Open(filepath.Join(env.ledger, ticket+".ticket"))
+			require.NoError(t, err)
+			defer func() { _ = f.Close() }()
+			require.NoError(t, unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB), "lease released")
+		})
+	}
 }

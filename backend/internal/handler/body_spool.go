@@ -80,6 +80,7 @@ const bodySpoolStateKey = "large_request_body_spool_state"
 
 // bodySpoolState is one request's spool, lease and charge.
 type bodySpoolState struct {
+	file     *bodyspool.File // the spool file from creation on, so a panic frees it
 	spool    *bodyspool.Spool
 	lease    *bodyspool.Lease
 	charge   *bodyspool.Charge
@@ -101,6 +102,9 @@ func releaseRequestBodySpool(c *gin.Context) {
 	if st.spool != nil {
 		_ = st.spool.Close()
 	}
+	if st.file != nil {
+		_ = st.file.Close() // idempotent
+	}
 	st.lease.Release()
 	st.charge.Release()
 }
@@ -109,11 +113,15 @@ func releaseRequestBodySpool(c *gin.Context) {
 // middleware that reads the body.
 func BodySpoolIngest(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if _, done := c.Get(bodySpoolStateKey); !done {
+			// Deferred before the ingest, so a panic in it still frees the
+			// charge, the lease and the spool.
+			defer releaseRequestBodySpool(c)
+		}
 		if !ingestRequestBody(c, cfg) {
 			c.Abort()
 			return
 		}
-		defer releaseRequestBodySpool(c)
 		c.Next()
 	}
 }
@@ -273,6 +281,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	if err != nil {
 		return fail(&capacityRefusal{http.StatusInternalServerError, "body_spool_unavailable", bodySpoolHop + ": " + err.Error()})
 	}
+	st.file = f
 	sp, skel, err := bodyspool.Ingest(c.Request.Body, f, bodyspool.Options{
 		Threshold:   rt.cfg.Threshold,
 		KeepPrefix:  bodyspool.DefaultKeepPrefix,

@@ -201,7 +201,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
 	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
-	upstreamReq, err := newOpenAIUpstreamBodyRequest(upstreamCtx, nil, http.MethodPost, targetURL, body)
+	upstreamReq, err := newOpenAIUpstreamBodyRequest(upstreamCtx, c, http.MethodPost, targetURL, body)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
@@ -247,6 +247,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header, body)
 	applyOpenAISessionAffinityHeader(c, account, upstreamReq.Header)
+	s.applyCapacityTicketHeader(account, upstreamReq)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
