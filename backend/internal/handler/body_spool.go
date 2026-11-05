@@ -359,3 +359,54 @@ func (r *chargingReader) Read(p []byte) (int, error) {
 }
 
 func (r *chargingReader) Close() error { return nil }
+
+const bodySpoolAuditRefusalKey = "large_request_body_spool_audit_refusal"
+
+// codeSpooledMediaModerationUnsupported names the refusal of a request with
+// spooled media while legacy content moderation would inspect it.
+const codeSpooledMediaModerationUnsupported = "spooled_media_moderation_unsupported"
+
+// auditBodyForSpool prepares body for content moderation and the security
+// audit (review major 3). Without spooled blobs it returns body unchanged:
+// the skeleton is then the body. With blobs:
+//   - when legacy content moderation would inspect this request, it refuses
+//     with 422 spooled_media_moderation_unsupported before any moderation
+//     call: that engine moderates images, and spooled images cannot be
+//     handed to it within the memory rules;
+//   - otherwise the audit gets a copy, charged before it is allocated, with
+//     each marker replaced by "[spooled media: N bytes]". The prompt guard
+//     reads only text, so it audits what it audited before, and no marker
+//     or nonce reaches it, its store or its upstream.
+func auditBodyForSpool(c *gin.Context, legacyModerates func() bool, body []byte) ([]byte, *capacityRefusal) {
+	v, ok := c.Get(bodySpoolStateKey)
+	if !ok {
+		return body, nil
+	}
+	st := v.(*bodySpoolState)
+	if st.released || st.spool == nil {
+		return body, nil
+	}
+	if legacyModerates() {
+		return nil, &capacityRefusal{http.StatusUnprocessableEntity, codeSpooledMediaModerationUnsupported,
+			bodySpoolHop + ": content moderation is enabled for this request and cannot inspect spooled media (strings of 64 KiB or more); nothing was sent"}
+	}
+	redacted, err := st.spool.Redact(body, st.charge.Add)
+	if err != nil {
+		if errors.Is(err, bodyspool.ErrMarkerUnresolved) {
+			return nil, &capacityRefusal{http.StatusInternalServerError, "marker_unresolved", bodySpoolHop + ": " + err.Error()}
+		}
+		return nil, refusalFor(err, 0)
+	}
+	return redacted, nil
+}
+
+// writeBodySpoolAuditRefusal writes the refusal auditBodyForSpool returned
+// for this request, if any.
+func writeBodySpoolAuditRefusal(c *gin.Context) bool {
+	v, ok := c.Get(bodySpoolAuditRefusalKey)
+	if !ok {
+		return false
+	}
+	writeCapacityRefusal(c, v.(*capacityRefusal))
+	return true
+}
