@@ -251,3 +251,47 @@ func TestBodySpoolLegacyModerationRefusesBlobs(t *testing.T) {
 		})
 	}
 }
+
+// offPromptEngine is a configured but disabled prompt guard.
+type offPromptEngine struct{ called atomic.Int32 }
+
+func (e *offPromptEngine) EffectiveMode() securityaudit.Mode { return securityaudit.ModeOff }
+func (e *offPromptEngine) Enqueue(context.Context, securityaudit.Request) error {
+	e.called.Add(1)
+	return nil
+}
+func (e *offPromptEngine) Evaluate(context.Context, securityaudit.Request) (*securityaudit.PromptDecision, error) {
+	e.called.Add(1)
+	return &securityaudit.PromptDecision{Kind: securityaudit.DecisionAllow, AllowNextStage: true}, nil
+}
+
+// TestBodySpoolAuditCopyOnlyWhenRead: the redacted copy is made, and
+// charged, only while the prompt guard is on; with every engine off the
+// request's charge at upstream time is smaller by exactly the copy's size.
+func TestBodySpoolAuditCopyOnlyWhenRead(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := spoolModerationImageBody("what is in this picture?")
+	held := func(engine securityaudit.PromptEngine) int64 {
+		upstream := &largeBodyDrainUpstream{block: make(chan struct{}), entered: make(chan struct{})}
+		h := newLargeBodyTestHandler(t, upstream, "oauth")
+		h.securityAuditCoordinator = securityaudit.NewCoordinator(nil, engine)
+		enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
+		meter := bodySpoolRuntimeFor(h.cfg).meter
+		c, rec := newLargeBodyTestContext("/v1/responses", body, "")
+		done := make(chan struct{})
+		go func() { defer close(done); h.Responses(c) }()
+		<-upstream.entered
+		n := meter.Outstanding()
+		close(upstream.block)
+		<-done
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Zero(t, meter.Outstanding())
+		return n
+	}
+	off := &offPromptEngine{}
+	on := newGuardEngine()
+	withCopy, without := held(on), held(off)
+	require.Zero(t, off.called.Load())
+	require.Len(t, on.bodies, 1)
+	require.EqualValues(t, len(on.bodies[0]), withCopy-without, "the copy is charged at its exact size, only when read")
+}

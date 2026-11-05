@@ -382,11 +382,15 @@ const codeSpooledMediaModerationUnsupported = "spooled_media_moderation_unsuppor
 //     with 422 spooled_media_moderation_unsupported before any moderation
 //     call: that engine moderates images, and spooled images cannot be
 //     handed to it within the memory rules;
-//   - otherwise the audit gets a copy, charged before it is allocated, with
-//     each marker replaced by "[spooled media: N bytes]". The prompt guard
-//     reads only text, so it audits what it audited before, and no marker
-//     or nonce reaches it, its store or its upstream.
-func auditBodyForSpool(c *gin.Context, legacyModerates func() bool, body []byte) ([]byte, *capacityRefusal) {
+//   - when the prompt guard is on, the audit gets a copy, charged before it
+//     is allocated, with each marker replaced by "[spooled media: N bytes]".
+//     The guard reads only text, so it audits what it audited before, and no
+//     marker or nonce reaches it, its store or its upstream;
+//   - when neither engine reads the body, it gets none (nil): no copy is
+//     made or charged. If an admin turns an engine on between this check
+//     and the engine's own, that one request is audited without its body,
+//     never with a marker.
+func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool, body []byte) ([]byte, *capacityRefusal) {
 	v, ok := c.Get(bodySpoolStateKey)
 	if !ok {
 		return body, nil
@@ -398,6 +402,9 @@ func auditBodyForSpool(c *gin.Context, legacyModerates func() bool, body []byte)
 	if legacyModerates() {
 		return nil, &capacityRefusal{http.StatusUnprocessableEntity, codeSpooledMediaModerationUnsupported,
 			bodySpoolHop + ": content moderation is enabled for this request and cannot inspect spooled media (strings of 64 KiB or more); nothing was sent"}
+	}
+	if !promptReads() {
+		return nil, nil
 	}
 	redacted, err := st.spool.Redact(body, st.charge.Add)
 	if err != nil {
