@@ -18,8 +18,9 @@ import (
 // baseline) of a /v1/responses request that the account serves through the
 // Responses->Chat converter, divided by the body bytes. Default GOGC, no
 // memory limit. In a container, peak - idle memory.current is not a valid k
-// measure once the charge equals the room: Go lets garbage grow into the
-// free memory, so the reading tracks the room, not the request.
+// measure once the charge equals the room: the heap goal is 2 x the live
+// heap, memory.current counts unswept garbage too, and memory.peak cannot
+// pass memory.max, so the reading saturates at the room.
 //
 // SUB2API_KCONV_BODIES names the corpus files (comma-separated paths); the
 // test skips without it.
