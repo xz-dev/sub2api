@@ -3,7 +3,9 @@ package bodyspool
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -121,4 +123,29 @@ func TestInlineLimitAndCharge(t *testing.T) {
 	sp, skel := ingestBytes(t, d, img, Options{InlineLimit: 4096}, nil)
 	require.Equal(t, 1, sp.Blobs())
 	require.Less(t, len(skel), 4096)
+}
+
+// TestRedactReplacesMarkers: the redacted copy has a nonce-free placeholder
+// per blob, the exact reserved length, and every other byte unchanged.
+func TestRedactReplacesMarkers(t *testing.T) {
+	d := testDir(t)
+	img := strings.Repeat("B", 70000)
+	body := []byte(`{"input":[{"type":"input_text","text":"look at this"},{"type":"input_image","image_url":"data:image/png;base64,` + img + `"}]}`)
+	sp, skel := ingestBytes(t, d, body, Options{KeepPrefix: DefaultKeepPrefix}, nil)
+	require.Equal(t, 1, sp.Blobs())
+	var reserved int64
+	out, err := sp.Redact(skel, func(n int64) error { reserved = n; return nil })
+	require.NoError(t, err)
+	require.EqualValues(t, len(out), reserved)
+	require.NotContains(t, string(out), sp.nonce.Hex())
+	require.NotContains(t, string(out), `\u0000`)
+	blobLen := 70000 + len("data:image/png;base64,") - DefaultKeepPrefix
+	want := `"image_url":"` + string(body[bytes.Index(body, []byte("data:")):][:DefaultKeepPrefix]) + "[spooled media: " + strconv.Itoa(blobLen) + ` bytes]"`
+	require.Contains(t, string(out), want)
+	require.Contains(t, string(out), `"text":"look at this"`)
+	require.True(t, json.Valid(out))
+
+	stop := errors.New("no memory")
+	_, err = sp.Redact(skel, func(int64) error { return stop })
+	require.ErrorIs(t, err, stop)
 }
