@@ -30,7 +30,7 @@ func applyMappedGPT55LiteCompatibility(req *http.Request, account *Account, body
 		if err != nil {
 			return fmt.Errorf("remove mapped GPT-5.5 Lite metadata: %w", err)
 		}
-		if err := setOpenAIUpstreamBody(req, body); err != nil {
+		if err := setOpenAIUpstreamBody(req, body, true); err != nil {
 			return err
 		}
 	}

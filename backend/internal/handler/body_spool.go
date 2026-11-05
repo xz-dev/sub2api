@@ -257,6 +257,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		Threshold:   rt.cfg.Threshold,
 		KeepPrefix:  bodyspool.DefaultKeepPrefix,
 		InlineLimit: inline,
+		SizeHint:    min(size, inline), // charged up front; -1 (chunked) means none
 		Charge: func(n int64) error {
 			if inlineSeen += n; inlineSeen <= prepaid {
 				return nil

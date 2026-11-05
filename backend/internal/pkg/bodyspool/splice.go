@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"strconv"
+	"strings"
+	"unsafe"
 )
 
 // Reader returns the egress body for a (possibly rewritten) skeleton: each
@@ -33,7 +35,7 @@ func (s *Spool) Reader(skel []byte) (io.Reader, int64, error) {
 
 // Contains reports whether text holds a marker of this spool.
 func (s *Spool) Contains(text string) bool {
-	return s != nil && bytes.Contains([]byte(text), s.tag)
+	return s != nil && strings.Contains(text, string(s.tag))
 }
 
 // WriteExpanded writes text to w with every marker, escaped (\u0000…) or
@@ -42,7 +44,8 @@ func (s *Spool) Contains(text string) bool {
 // hash or measure content exactly as the legacy path saw it.
 func (s *Spool) WriteExpanded(w io.Writer, text string) error {
 	var werr error
-	err := s.walk([]byte(text), true, func(lit []byte, b *blob) {
+	// walk and io.Writer.Write only read the bytes: view text without a copy.
+	err := s.walk(unsafe.Slice(unsafe.StringData(text), len(text)), true, func(lit []byte, b *blob) {
 		if werr != nil {
 			return
 		}

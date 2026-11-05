@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -182,5 +183,11 @@ func normalizeCompatSeedJSON(v json.RawMessage) string {
 	if err != nil {
 		return string(v)
 	}
-	return string(out)
+	return unsafe.String(unsafe.SliceData(out), len(out)) // out is fresh and never written again
+}
+
+// rawJSONView is a read-only json.RawMessage view of s, for decoders that
+// never write their input (a content seed field can be as large as the body).
+func rawJSONView(s string) json.RawMessage {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
