@@ -90,6 +90,12 @@ func (m *Meter) read() (limit, current int64, err error) {
 	return limit, current, err
 }
 
+// Close releases the cgroup file descriptors.
+func (m *Meter) Close() {
+	_ = m.max.Close()
+	_ = m.cur.Close()
+}
+
 // Outstanding is the sum of live charges.
 func (m *Meter) Outstanding() int64 { return m.outstanding.Load() }
 
