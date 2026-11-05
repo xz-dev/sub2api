@@ -73,13 +73,16 @@ const (
 	// 6 is the worst plus ~20 %. S_h = (320 - 32 - 48) / 6 = 40 MiB >= S.
 	DefaultBodySpoolKSkel float64 = 6
 	// k_conv: a request a protocol converter rewrites (Responses -> Chat
-	// Completions measured; every converter takes it). Same method in a 1g
-	// Sub2API on a force_chat_completions account: at most 18.88
-	// (d10-tiny-msgs-16, ~35-byte messages; 22.6 x peak heap in-process,
-	// review rr3), 14.69 (d10-small-items-16), 11.00 (d10-text-16), 10.31
-	// (d10-utext-16). 23 is the worst plus ~20 %, above the in-process peak.
-	// S_conv at 320m = (320 - 32 - 48) / 23 = 10.4 MiB.
-	DefaultBodySpoolKConv          float64 = 23
+	// Completions measured; every converter takes it). Same method on a
+	// force_chat_completions account. In a 1g Sub2API at 16 MiB: at most
+	// 18.88 (d10-tiny-msgs-16, ~35-byte messages; 22.6 x peak heap
+	// in-process, review rr3), 14.69 (d10-small-items-16), 11.00
+	// (d10-text-16), 10.31 (d10-utext-16). In a 320m Sub2API at 10 MiB
+	// (below the old S_conv): 24.70 (d10-tiny-msgs-10), 15.40
+	// (d10-small-items-10); k is higher on a smaller body in a tighter
+	// container. 30 is the worst plus ~20 %. k_conv only sizes S_conv and
+	// L_conv: S_conv at 320m = (320 - 32 - 48) / 30 = 8 MiB.
+	DefaultBodySpoolKConv          float64 = 30
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
