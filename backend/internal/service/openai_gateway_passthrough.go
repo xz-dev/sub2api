@@ -780,10 +780,10 @@ func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, r
 	if isOpenAIContextWindowError("", responseBody) {
 		return false
 	}
-	if isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) {
-		return true
+	if isOpenAIRequestScopedPassthroughError(statusCode, responseBody) {
+		return false
 	}
-	if isOpenAIRequestBodyTooLargeError(statusCode, "", responseBody) {
+	if isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) {
 		return true
 	}
 	if account != nil && account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode) {
@@ -939,8 +939,11 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	requestBody []byte,
 	responseBody []byte,
 ) error {
-	MarkResponseCommitted(c)
 	body := s.redactAgentIdentitySensitiveBody(ctx, account, responseBody)
+	if isOpenAIRequestScopedPassthroughError(resp.StatusCode, body) {
+		return s.writeOpenAIRequestScopedPassthroughError(c, resp, body)
+	}
+	MarkResponseCommitted(c)
 
 	// cyber_policy 仍按原始 body 打内部标记，供 handler 事后写风控/邮件；面向客户端的
 	// 错误体在下方统一重建。cyber 是上游网络安全策略拦截，不冷却账号，

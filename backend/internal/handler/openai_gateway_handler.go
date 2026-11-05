@@ -3538,17 +3538,6 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
-	if failoverErr.IsOpenAIRequestBodyTooLarge() {
-		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")
-		h.handleStreamingAwareError(
-			c,
-			http.StatusRequestEntityTooLarge,
-			"invalid_request_error",
-			service.OpenAIRequestBodyTooLargeClientMessage,
-			streamStarted,
-		)
-		return
-	}
 	if failoverErr.Reason == service.OpenAIHTTPContinuationUnsupportedReason {
 		message := strings.TrimSpace(failoverErr.ClientMessage)
 		if message == "" {
