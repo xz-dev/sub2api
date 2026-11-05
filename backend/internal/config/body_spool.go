@@ -62,15 +62,24 @@ const (
 	// Settled idle working set measured at 320m: 33-38 MiB, once 57 MiB with
 	// the executable's page cache active; design D4 uses 45 MiB.
 	DefaultBodySpoolIdleBaseline int64 = 48 << 20
-	// Measured with the prompt guard on, (memory.peak - idle memory.current)
-	// / 16 MiB in a 320m Sub2API: at most 14.00 (blocking) and 13.88 (async)
-	// on the structure-heavy corpus d10-small-items-16 (197,288 items of
-	// ~85 B; 14.0 with the guard off, the cost is the Responses->Chat
-	// conversion), 11.00 (async, d10-utext-16), 11.56 (async, D10 text-16);
-	// rounded up with ~7 % margin, within the bound 15.1.
-	// S_h = (320 - 32 - 48) / 15 = 16.0 MiB >= S.
-	DefaultBodySpoolKSkel          float64 = 15
-	DefaultBodySpoolKConv          float64 = 25
+	// k_skel: a covered request served by a Responses-native account
+	// (passthrough, the production setup: openai_responses_mode=
+	// force_responses). Measured with the prompt guard on, (memory.peak -
+	// idle memory.current) / 16 MiB in a 320m Sub2API, async and blocking,
+	// after the passthrough normalizers stopped decoding unchanged bodies
+	// (review rr3): at most 4.81 (d10-utext-16), 4.94 on invalid UTF-8 text
+	// (d10-invalid-16, up to its pre-existing 502), 4.12 (d10-text-16), 3.00
+	// (d10-small-items-16), 2.44 (d10-tiny-msgs-16), 1.62 (M0 text-16).
+	// 6 is the worst plus ~20 %. S_h = (320 - 32 - 48) / 6 = 40 MiB >= S.
+	DefaultBodySpoolKSkel float64 = 6
+	// k_conv: a request a protocol converter rewrites (Responses -> Chat
+	// Completions measured; every converter takes it). Same method in a 1g
+	// Sub2API on a force_chat_completions account: at most 18.88
+	// (d10-tiny-msgs-16, ~35-byte messages; 22.6 x peak heap in-process,
+	// review rr3), 14.69 (d10-small-items-16), 11.00 (d10-text-16), 10.31
+	// (d10-utext-16). 23 is the worst plus ~20 %, above the in-process peak.
+	// S_conv at 320m = (320 - 32 - 48) / 23 = 10.4 MiB.
+	DefaultBodySpoolKConv          float64 = 23
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
