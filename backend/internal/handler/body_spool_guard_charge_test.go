@@ -13,7 +13,7 @@ import (
 
 // TestBodySpoolGuardDecodeChargedOnFallbackPaths: on a fallback path (no
 // k_skel envelope) the prompt guard's decode is charged before it runs, at
-// guardDecodeK × the body in granules, and only while the guard reads the
+// guardDecodeK × the body in granules plus guardFixedBytes, and only while the guard reads the
 // body. A covered path's charge is unchanged by the guard: its decode runs
 // inside the k_skel envelope, which was measured with the guard on.
 func TestBodySpoolGuardDecodeChargedOnFallbackPaths(t *testing.T) {
@@ -40,12 +40,12 @@ func TestBodySpoolGuardDecodeChargedOnFallbackPaths(t *testing.T) {
 		require.Zero(t, meter.Outstanding())
 		return n
 	}
-	want := chargeBytes(guardDecodeK, roundUpGranule(int64(len(body))))
+	want := chargeBytes(guardDecodeK, roundUpGranule(int64(len(body)))) + guardFixedBytes
 
 	on, off := newGuardEngine(), &offPromptEngine{}
 	fallbackOn, fallbackOff := held("/v1/responses/compact", on), held("/v1/responses/compact", off)
 	require.Len(t, on.bodies, 1, "the guard read the fallback body")
-	require.EqualValues(t, want, fallbackOn-fallbackOff, "fallback: the guard decode is charged at guardDecodeK × the body")
+	require.EqualValues(t, want, fallbackOn-fallbackOff, "fallback: the guard decode is charged at guardDecodeK × the body + guardFixedBytes")
 
 	on = newGuardEngine()
 	coveredOn, coveredOff := held("/v1/responses", on), held("/v1/responses", off)

@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// SplitRunes splits value at the priority separator, then into chunks of at
+// most limit runes. The chunks are substrings of value: it walks value in
+// place and copies no text (review a4a7d843 blocker 2: a []rune copy of the
+// whole scan text, then a string copy of every chunk). Invalid UTF-8 bytes
+// become U+FFFD in their chunk, as the []rune conversion made them.
 func SplitRunes(value string, limit int) []string {
 	if limit <= 0 {
 		return nil
@@ -14,13 +19,16 @@ func SplitRunes(value string, limit int) []string {
 	segments := strings.Split(value, promptAuditPrioritySeparator)
 	chunks := make([]string, 0, len(segments))
 	for _, segment := range segments {
-		runes := []rune(segment)
-		for start := 0; start < len(runes); start += limit {
-			end := start + limit
-			if end > len(runes) {
-				end = len(runes)
+		start, count := 0, 0
+		for index := range segment {
+			if count == limit {
+				chunks = append(chunks, keepRunes(segment[start:index]))
+				start, count = index, 0
 			}
-			chunks = append(chunks, string(runes[start:end]))
+			count++
+		}
+		if count > 0 {
+			chunks = append(chunks, keepRunes(segment[start:]))
 		}
 	}
 	return chunks
