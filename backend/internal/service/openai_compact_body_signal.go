@@ -29,7 +29,12 @@ func NormalizeCompactionTriggerInputOrder(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	if !compactionTriggerNeedsDecode(body) {
+	// A valid body with no compaction trigger anywhere in input is returned
+	// as is without decoding it (review rr3: decoding a body of many small
+	// items into maps cost about 30 x the body on every passthrough request).
+	// Upstream's byte-level check covers the remaining unchanged shapes.
+	if !compactionTriggerNeedsDecode(body) ||
+		(gjson.ValidBytes(body) && parseRawJSONView(body).IsObject() && !mayHaveCompactionTrigger(body)) {
 		return body, false, nil
 	}
 	var payload map[string]any
@@ -107,6 +112,30 @@ func compactionTriggerIsLastInputItem(body []byte) bool {
 		return true
 	})
 	return last.IsObject() && last.Get("type").String() == "compaction_trigger"
+}
+
+// mayHaveCompactionTrigger reports whether any top-level "input" member
+// of the valid body is an array with an object that has any "type" member
+// equal to "compaction_trigger". When it is false, the decoded input (the
+// last "input", each item's last "type") has no trigger either.
+func mayHaveCompactionTrigger(body []byte) bool {
+	found := false
+	parseRawJSONView(body).ForEach(func(key, input gjson.Result) bool {
+		if key.Str != "input" || !input.IsArray() {
+			return true
+		}
+		input.ForEach(func(_, item gjson.Result) bool {
+			if item.IsObject() {
+				item.ForEach(func(name, value gjson.Result) bool {
+					found = name.Str == "type" && value.Type == gjson.String && value.Str == "compaction_trigger"
+					return !found
+				})
+			}
+			return !found
+		})
+		return !found
+	})
+	return found
 }
 
 func isOpenAINativeCompactionV2(c *gin.Context) bool {
@@ -217,6 +246,7 @@ func HasCompactionTriggerInInput(body []byte) bool {
 	if !bytes.Contains(body, compactionTriggerToken) && !JSONMayEscapePlainASCII(body) {
 		return false
 	}
+	// A read-only view: GetBytes would copy all of input (review rr3).
 	input := parseRawJSONView(body).Get("input")
 	if !input.IsArray() {
 		return false
