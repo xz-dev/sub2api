@@ -24,16 +24,76 @@ func MarkOpenAINativeCompactionV2(c *gin.Context) {
 
 // NormalizeCompactionTriggerInputOrder keeps a single compaction trigger as
 // the final Responses input item, as required by the upstream v2 wire format.
+//
+// A valid body is read and rewritten as raw JSON (review rr4: decoding a
+// body of many small items into maps cost about 22 x the body): the last
+// "input" member and each item's last "type" member decide, as the standard
+// decoder would; a rewrite also keeps only the last root member of each
+// name, as re-encoding the decoded body did. Other bytes are kept as sent.
 func NormalizeCompactionTriggerInputOrder(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	// A valid body with no compaction trigger anywhere in input is returned
-	// as is without decoding it (review rr3: decoding a body of many small
-	// items into maps cost about 30 x the body on every passthrough request).
-	if gjson.ValidBytes(body) && parseRawJSONView(body).IsObject() && !mayHaveCompactionTrigger(body) {
+	root := parseRawJSONView(body)
+	if !gjson.ValidBytes(body) || !root.IsObject() {
+		return normalizeCompactionTriggerInputOrderDecoded(body)
+	}
+	if !mayHaveCompactionTrigger(body) {
 		return body, false, nil
 	}
+	input := lastRawObjectMember(root, "input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+	triggerCount, lastIsTrigger := 0, false
+	input.ForEach(func(_, item gjson.Result) bool {
+		lastIsTrigger = isRawCompactionTrigger(item)
+		if lastIsTrigger {
+			triggerCount++
+		}
+		return true
+	})
+	if triggerCount == 0 || (triggerCount == 1 && lastIsTrigger) {
+		return body, false, nil
+	}
+	const trigger = `{"type":"compaction_trigger"}`
+	keys := make([]string, 0, 32)
+	dedup := hasDuplicateJSONObjectKeysIn(root, &keys)
+	return rewriteRawObjectMember(body, root, input, dedup, len(input.Raw)+len(trigger)+1, func(dst []byte) []byte {
+		dst = append(dst, '[')
+		first := true
+		input.ForEach(func(_, item gjson.Result) bool {
+			if isRawCompactionTrigger(item) {
+				return true
+			}
+			if !first {
+				dst = append(dst, ',')
+			}
+			first = false
+			dst = append(dst, item.Raw...)
+			return true
+		})
+		if !first {
+			dst = append(dst, ',')
+		}
+		dst = append(dst, trigger...)
+		return append(dst, ']')
+	}), true, nil
+}
+
+// isRawCompactionTrigger reports whether item is an object whose last "type"
+// member is the string "compaction_trigger".
+func isRawCompactionTrigger(item gjson.Result) bool {
+	if !item.IsObject() {
+		return false
+	}
+	typ := lastRawObjectMember(item, "type")
+	return typ.Type == gjson.String && typ.Str == "compaction_trigger"
+}
+
+// normalizeCompactionTriggerInputOrderDecoded is the decoding form, kept for
+// a body that is not a valid JSON object (the decoder's error is returned).
+func normalizeCompactionTriggerInputOrderDecoded(body []byte) ([]byte, bool, error) {
 	var payload map[string]any
 	if err := decodeOpenAIJSONUseNumber(body, &payload); err != nil {
 		return body, false, err

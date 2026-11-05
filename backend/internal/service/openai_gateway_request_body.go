@@ -597,10 +597,11 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
-	normalized := []byte(`{}`)
 	// Keep the current Codex /compact schema while still dropping request-scoped
-	// fields such as prompt_cache_key, store, and stream.
-	for _, field := range []string{
+	// fields such as prompt_cache_key, store, and stream. The fields are
+	// copied as raw JSON into one new body (review rr4: a field-by-field
+	// rebuild copied the whole body once per field).
+	fields := [...]string{
 		"model",
 		"input",
 		"instructions",
@@ -610,17 +611,31 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 		"service_tier",
 		"text",
 		"previous_response_id",
-	} {
-		value := gjson.GetBytes(body, field)
-		if !value.Exists() {
+	}
+	root := parseRawJSONView(body)
+	var values [len(fields)]gjson.Result
+	size := 2
+	for i, field := range fields {
+		values[i] = root.Get(field)
+		if values[i].Exists() {
+			size += len(field) + len(values[i].Raw) + 4
+		}
+	}
+	normalized := make([]byte, 0, size)
+	normalized = append(normalized, '{')
+	for i, field := range fields {
+		if !values[i].Exists() {
 			continue
 		}
-		next, err := sjson.SetRawBytes(normalized, field, []byte(value.Raw))
-		if err != nil {
-			return body, false, fmt.Errorf("normalize compact body %s: %w", field, err)
+		if len(normalized) > 1 {
+			normalized = append(normalized, ',')
 		}
-		normalized = next
+		normalized = append(normalized, '"')
+		normalized = append(normalized, field...)
+		normalized = append(normalized, '"', ':')
+		normalized = append(normalized, values[i].Raw...)
 	}
+	normalized = append(normalized, '}')
 	if next, removed, err := normalizeOpenAIParallelToolCallsWithoutTools(normalized, false); err != nil {
 		return body, false, err
 	} else if removed {
@@ -637,7 +652,7 @@ func normalizeOpenAIParallelToolCallsWithoutTools(body []byte, responsesLite boo
 	if responsesLite {
 		return body, false, nil
 	}
-	parallel := gjson.GetBytes(body, "parallel_tool_calls")
+	parallel := parseRawJSONView(body).Get("parallel_tool_calls")
 	if !parallel.Exists() {
 		return body, false, nil
 	}
@@ -652,19 +667,40 @@ func normalizeOpenAIParallelToolCallsWithoutTools(body []byte, responsesLite boo
 }
 
 // openAIRequestBodyHasTools 同时识别顶层 tools 和 input[].additional_tools。
+// It walks a read-only view and builds no item list (review rr4: GetBytes
+// copied all of input and Array built a result per item, about 10 x a body
+// of many small items).
 func openAIRequestBodyHasTools(body []byte) bool {
-	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() && len(tools.Array()) > 0 {
+	root := parseRawJSONView(body)
+	if nonEmptyRawJSONArray(root.Get("tools")) {
 		return true
 	}
-	for _, item := range gjson.GetBytes(body, "input").Array() {
-		if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
-			continue
-		}
-		if tools := item.Get("tools"); tools.IsArray() && len(tools.Array()) > 0 {
-			return true
-		}
+	isAdditionalTools := func(item gjson.Result) bool {
+		return strings.TrimSpace(item.Get("type").String()) == "additional_tools" && nonEmptyRawJSONArray(item.Get("tools"))
 	}
-	return false
+	input := root.Get("input")
+	if !input.IsArray() {
+		// Array() of a non-array value is that value alone.
+		return input.Exists() && isAdditionalTools(input)
+	}
+	found := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		found = isAdditionalTools(item)
+		return !found
+	})
+	return found
+}
+
+func nonEmptyRawJSONArray(value gjson.Result) bool {
+	if !value.IsArray() {
+		return false
+	}
+	nonEmpty := false
+	value.ForEach(func(_, _ gjson.Result) bool {
+		nonEmpty = true
+		return false
+	})
+	return nonEmpty
 }
 
 // normalizeOpenAIResponsesReasoningContentReplay removes non-portable
@@ -737,8 +773,20 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 	if !input.IsArray() {
 		return body, false, nil
 	}
-	if !root.IsObject() || !gjson.ValidBytes(body) || !utf8.Valid(body) || hasDuplicateJSONObjectKeys(root) {
+	if !root.IsObject() || !gjson.ValidBytes(body) || !utf8.Valid(body) {
 		return normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body, knownStoreFalse)
+	}
+	// Duplicate names are resolved as the decoder does, without decoding the
+	// body (review rr4: the decoded fallback cost about 20 x a body of many
+	// small items): the last "input" member is the input, an item with a
+	// duplicate name is decoded alone, and a rewrite keeps only the last root
+	// member of each name.
+	keys := make([]string, 0, 32)
+	rootDuplicate := hasDuplicateJSONObjectKeysIn(root, &keys)
+	if rootDuplicate {
+		if input = lastRawObjectMember(root, "input"); !input.IsArray() {
+			return body, false, nil
+		}
 	}
 	if !storeFalseReplayMayChange(input) {
 		// Nothing below would change or fall back: keep no item list (review
@@ -750,16 +798,31 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 	// slices of the original JSON and copy them once into the final request.
 	items := make([]string, 0)
 	changed := false
-	fallback := false
 	var itemErr error
 	input.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
 			items = append(items, item.Raw)
 			return true
 		}
-		if hasDuplicateJSONObjectKeys(item) {
-			fallback = true
-			return false
+		if hasDuplicateJSONObjectKeysIn(item, &keys) {
+			var decoded map[string]any
+			if err := decodeOpenAIJSONUseNumber([]byte(item.Raw), &decoded); err != nil {
+				itemErr = err
+				return false
+			}
+			keep, itemChanged := applyStoreFalseReplayItemRules(decoded)
+			changed = changed || itemChanged
+			if !keep {
+				return true
+			}
+			// Kept with the last member of each name, as a decoded rewrite.
+			encoded, err := marshalOpenAIUpstreamJSON(decoded)
+			if err != nil {
+				itemErr = err
+				return false
+			}
+			items = append(items, string(encoded))
+			return true
 		}
 		typ := strings.TrimSpace(item.Get("type").String())
 		id := strings.TrimSpace(item.Get("id").String())
@@ -799,16 +862,29 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 		changed = true
 		return true
 	})
-	if fallback {
-		return normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body, knownStoreFalse)
-	}
 	if itemErr != nil {
 		return body, false, fmt.Errorf("normalize API-key store=false reasoning replay: %w", itemErr)
 	}
 	if !changed {
 		return body, false, nil
 	}
-	return replaceOpenAIRawInput(body, input, items), true, nil
+	if !rootDuplicate {
+		return replaceOpenAIRawInput(body, input, items), true, nil
+	}
+	size := len(items) + 1
+	for _, item := range items {
+		size += len(item)
+	}
+	return rewriteRawObjectMember(body, root, input, true, size, func(dst []byte) []byte {
+		dst = append(dst, '[')
+		for index, item := range items {
+			if index > 0 {
+				dst = append(dst, ',')
+			}
+			dst = append(dst, item...)
+		}
+		return append(dst, ']')
+	}), true, nil
 }
 
 // storeFalseReplayMayChange reports whether the item walk of
@@ -864,36 +940,11 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body []byte, knownSto
 			filtered = append(filtered, rawItem)
 			continue
 		}
-		typ := strings.TrimSpace(firstNonEmptyString(item["type"]))
-		id := strings.TrimSpace(firstNonEmptyString(item["id"]))
-		switch typ {
-		case "reasoning":
-			encryptedContent, hasEncryptedContent := item["encrypted_content"].(string)
-			if !hasEncryptedContent || strings.TrimSpace(encryptedContent) == "" {
-				changed = true
-				continue
-			}
-			if strings.HasPrefix(id, "rs_") {
-				delete(item, "id")
-				changed = true
-			}
-			if summary, ok := item["summary"]; !ok || summary == nil {
-				item["summary"] = []any{}
-				changed = true
-			}
-		case "item_reference":
-			if strings.HasPrefix(id, "rs_") {
-				changed = true
-				continue
-			}
+		keep, itemChanged := applyStoreFalseReplayItemRules(item)
+		changed = changed || itemChanged
+		if keep {
+			filtered = append(filtered, item)
 		}
-		if shouldStripOpenAIResponsesNonPairCallID(typ) {
-			if _, hasCallID := item["call_id"]; hasCallID {
-				delete(item, "call_id")
-				changed = true
-			}
-		}
-		filtered = append(filtered, item)
 	}
 	if !changed {
 		return body, false, nil
@@ -904,6 +955,39 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body []byte, knownSto
 		return body, false, fmt.Errorf("serialize API-key store=false reasoning replay: %w", err)
 	}
 	return normalized, true, nil
+}
+
+// applyStoreFalseReplayItemRules applies the store=false replay rules to one
+// decoded input item in place: keep=false drops it.
+func applyStoreFalseReplayItemRules(item map[string]any) (keep, changed bool) {
+	typ := strings.TrimSpace(firstNonEmptyString(item["type"]))
+	id := strings.TrimSpace(firstNonEmptyString(item["id"]))
+	switch typ {
+	case "reasoning":
+		encryptedContent, hasEncryptedContent := item["encrypted_content"].(string)
+		if !hasEncryptedContent || strings.TrimSpace(encryptedContent) == "" {
+			return false, true
+		}
+		if strings.HasPrefix(id, "rs_") {
+			delete(item, "id")
+			changed = true
+		}
+		if summary, ok := item["summary"]; !ok || summary == nil {
+			item["summary"] = []any{}
+			changed = true
+		}
+	case "item_reference":
+		if strings.HasPrefix(id, "rs_") {
+			return false, true
+		}
+	}
+	if shouldStripOpenAIResponsesNonPairCallID(typ) {
+		if _, hasCallID := item["call_id"]; hasCallID {
+			delete(item, "call_id")
+			changed = true
+		}
+	}
+	return true, changed
 }
 
 func normalizeOpenAICodexCompactReasoningEffortForAccount(c *gin.Context, account *Account, body []byte) ([]byte, bool, error) {
