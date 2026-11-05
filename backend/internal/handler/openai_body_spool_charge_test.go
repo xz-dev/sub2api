@@ -77,7 +77,7 @@ func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 	for _, mode := range []string{"content_length", "chunked"} {
 		t.Run(mode, func(t *testing.T) {
 			upstream := &largeBodyDrainUpstream{block: make(chan struct{}), entered: make(chan struct{})}
-			h := newLargeBodyTestHandler(t, upstream, "oauth")
+			h := newLargeBodyTestHandler(t, upstream, "apikey")
 			env := enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 			stop := trackCgroup(t, h, env)
 			defer stop()
@@ -110,7 +110,7 @@ func TestOpenAIResponsesConcurrentTextBodies16MiB(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := largeResponsesTextBody(16 << 20)
 	upstream := &largeBodyDrainUpstream{block: make(chan struct{}), entered: make(chan struct{})}
-	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	env := enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	stop := trackCgroup(t, h, env)
 	defer stop()
@@ -149,7 +149,7 @@ func TestOpenAIResponsesConcurrentTextBodies16MiB(t *testing.T) {
 func TestBodySpoolChargeHeldUntilChainReturns(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &largeBodyDrainUpstream{}
-	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	meter := bodySpoolRuntimeFor(h.cfg).meter
 	var afterHandler int64 = -1
@@ -183,7 +183,7 @@ func TestOpenAIResponsesFreshHopBaseIsWorkingSet(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := largeResponsesTextBody(16 << 20)
 	upstream := &largeBodyDrainUpstream{}
-	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	env := enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.current"), []byte(strconv.Itoa(85<<20)+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.stat"), []byte("anon 30000000\ninactive_file "+strconv.Itoa(40<<20)+"\n"), 0o600))

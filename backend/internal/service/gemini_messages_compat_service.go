@@ -530,6 +530,11 @@ func (s *GeminiMessagesCompatService) HasAntigravityAccounts(ctx context.Context
 }
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
+	// A protocol converter (Claude -> Gemini): the converted request's
+	// charge first (review rr4: 35.76 x on small Claude messages).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()

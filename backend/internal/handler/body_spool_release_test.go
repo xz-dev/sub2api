@@ -25,7 +25,7 @@ import (
 func TestReleaseLargeRequestStateDropsPooledReferences(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &largeBodyDrainUpstream{}
-	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	rt := bodySpoolRuntimeFor(h.cfg)
 	require.NoError(t, rt.err)

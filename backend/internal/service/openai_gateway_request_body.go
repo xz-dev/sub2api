@@ -1238,9 +1238,11 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 	return view
 }
 
-// Decode 保留阶段一既有 full-map 行为；后续阶段会把调用点下沉到复杂分支。
-func (v openAIRequestView) Decode(c *gin.Context) (map[string]any, error) {
-	return getOpenAIRequestBodyMap(c, v.body)
+// DecodeFullBody 保留阶段一既有 full-map 行为；后续阶段会把调用点下沉到复杂分支。
+// A full decode: the caller takes ChargeRequestConversion first
+// (TestRequestConvertersChargeFirst).
+func (v openAIRequestView) DecodeFullBody() (map[string]any, error) {
+	return getOpenAIRequestBodyMap(nil, v.body)
 }
 
 func (v *openAIRequestView) MarkPatchSet(path string, value any) {

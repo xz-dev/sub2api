@@ -305,7 +305,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqBody != nil {
 			return reqBody, nil
 		}
-		decoded, decodeErr := requestView.Decode(c)
+		// A full decode costs about as much as a protocol conversion (the
+		// Codex OAuth transform, JSON-schema or image-tool rewrites, WS v2,
+		// retries): the converted request's charge first (review rr4).
+		if err := ChargeRequestConversion(c); err != nil {
+			return nil, err
+		}
+		decoded, decodeErr := requestView.DecodeFullBody()
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -338,6 +344,43 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	markDecodedModified := func() {
 		bodyModified = true
 		disablePatch()
+	}
+	// withRequestSkeleton runs a root-member rewrite (fn must not change
+	// input) without a full decode when none has happened yet, so a large
+	// passthrough request stays within k_skel (review rr4). A body already
+	// decoded (and charged) is rewritten in its map; a body the skeleton
+	// form cannot take is decoded through ensureReqBody.
+	withRequestSkeleton := func(fn func(map[string]any) bool) error {
+		if reqBody == nil {
+			if requestView.HasPatches() {
+				patchedBody, patchErr := requestView.ApplyPatches()
+				if patchErr != nil {
+					return patchErr
+				}
+				body = patchedBody
+				requestView = newOpenAIRequestView(body)
+				bodyModified = false
+			}
+			next, changed, ok, err := rewriteOpenAIRequestSkeleton(body, fn)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if changed {
+					body = next
+					requestView = newOpenAIRequestView(body)
+				}
+				return nil
+			}
+		}
+		decoded, decodeErr := ensureReqBody()
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if fn(decoded) {
+			markDecodedModified()
+		}
+		return nil
 	}
 
 	apiKey := getAPIKeyFromContext(c)
@@ -404,13 +447,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "text.format.type").String()) == "json_schema" ||
 		strings.TrimSpace(gjson.GetBytes(body, "response_format.type").String()) == "json_schema" {
-		decoded, decodeErr := ensureReqBody()
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		if normalizeOpenAIResponseFormatSchemas(decoded) {
-			markDecodedModified()
+		if err := withRequestSkeleton(func(decoded map[string]any) bool {
+			if !normalizeOpenAIResponseFormatSchemas(decoded) {
+				return false
+			}
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized Responses JSON schema compatibility")
+			return true
+		}); err != nil {
+			return nil, err
 		}
 	}
 
@@ -424,41 +468,60 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// /responses/compact 是会话压缩请求：上游不接受 tool_choice（400 unknown_parameter），
 	// 注入 image_generation 工具也没有意义，整块豁免。
 	if imageGenerationAllowed && !isCompactRequest && (codexImageGenerationBridgeEnabled || isOpenAIImageGenerationModel(requestView.Model) || openAIRequestBodyImageGenerationToolNeedsNormalization(body) || isOpenAIImageGenerationModel(upstreamModel)) {
-		decoded, decodeErr := ensureReqBody()
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(decoded) {
-			markDecodedModified()
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
-		}
-		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationToolChoiceAuto(decoded) {
-			markDecodedModified()
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Set /responses image_generation tool_choice=auto for Codex client")
-		}
-		if normalizeOpenAIResponsesImageGenerationTools(decoded) {
-			markDecodedModified()
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image_generation tool payload")
-		}
-		if normalizeOpenAIResponsesImageOnlyModel(decoded) {
-			markDecodedModified()
-			if model, ok := decoded["model"].(string); ok {
-				upstreamModel = strings.TrimSpace(model)
+		var imageModelErr error
+		imageRewrite := func(decoded map[string]any) bool {
+			modified := false
+			if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(decoded) {
+				modified = true
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
 			}
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image-only model request inbound_model=%s image_model=%s upstream_model=%s", requestView.Model, billingModel, upstreamModel)
+			if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationToolChoiceAuto(decoded) {
+				modified = true
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Set /responses image_generation tool_choice=auto for Codex client")
+			}
+			if normalizeOpenAIResponsesImageGenerationTools(decoded) {
+				modified = true
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image_generation tool payload")
+			}
+			if normalizeOpenAIResponsesImageOnlyModel(decoded) {
+				modified = true
+				if model, ok := decoded["model"].(string); ok {
+					upstreamModel = strings.TrimSpace(model)
+				}
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image-only model request inbound_model=%s image_model=%s upstream_model=%s", requestView.Model, billingModel, upstreamModel)
+			}
+			if err := validateOpenAIResponsesImageModel(decoded, upstreamModel); err != nil {
+				imageModelErr = err
+				return false // refused below; the body is not sent
+			}
+			if hasOpenAIImageGenerationTool(decoded) {
+				imageIntent = true
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] /responses image_generation request inbound_model=%s mapped_model=%s account_type=%s", requestView.Model, upstreamModel, account.Type)
+			}
+			if codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(decoded) {
+				modified = true
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
+			}
+			return modified
 		}
-		if err := validateOpenAIResponsesImageModel(decoded, upstreamModel); err != nil {
-			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": err.Error(), "param": "model"}})
+		// An image-only model rewrites input (normalizeOpenAIResponsesImageOnlyModel):
+		// a full decode. The tool, tool_choice and instructions rewrites of an
+		// ordinary turn touch root members only: the skeleton form (review rr4).
+		if isOpenAIImageGenerationModel(requestView.Model) || isOpenAIImageGenerationModel(upstreamModel) {
+			decoded, decodeErr := ensureReqBody()
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
+			if imageRewrite(decoded) {
+				markDecodedModified()
+			}
+		} else if err := withRequestSkeleton(imageRewrite); err != nil {
 			return nil, err
 		}
-		if hasOpenAIImageGenerationTool(decoded) {
-			imageIntent = true
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] /responses image_generation request inbound_model=%s mapped_model=%s account_type=%s", requestView.Model, upstreamModel, account.Type)
-		}
-		if codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(decoded) {
-			markDecodedModified()
-			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
+		if imageModelErr != nil {
+			setOpsUpstreamError(c, http.StatusBadRequest, imageModelErr.Error(), "")
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": imageModelErr.Error(), "param": "model"}})
+			return nil, imageModelErr
 		}
 	} else if imageGenerationAllowed && imageIntent && openAIRequestBodyHasImageGenerationDeclaration(body) {
 		// 完整 image_generation tool 只做 raw 计费读取，校验/桥接/旧字段迁移命中时才展开大 input map。

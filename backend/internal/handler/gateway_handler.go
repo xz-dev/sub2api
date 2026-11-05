@@ -516,6 +516,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				// A converted request refused for memory: written and final (rr4).
+				if service.IsRequestConversionRefused(err) {
+					return
+				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
@@ -996,6 +1000,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 
 			if err != nil {
+				// A converted request refused for memory: written and final (rr4).
+				if service.IsRequestConversionRefused(err) {
+					return
+				}
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {

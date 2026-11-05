@@ -72,17 +72,19 @@ const (
 	// (d10-small-items-16), 2.44 (d10-tiny-msgs-16), 1.62 (M0 text-16).
 	// 6 is the worst plus ~20 %. S_h = (320 - 32 - 48) / 6 = 40 MiB >= S.
 	DefaultBodySpoolKSkel float64 = 6
-	// k_conv: a request a protocol converter rewrites (Responses -> Chat
-	// Completions measured; every converter takes it). Measured in-process
-	// (TestBodySpoolConversionLiveK): peak live heap / body bytes, default
-	// GOGC, no memory limit, 3 runs at 2, 4, 8 and 16 MiB. Roughly flat; at
-	// most 25.67 (d10-tiny-msgs, ~35-byte messages, at 2 MiB; 20.3-24.0 at
-	// 4-16 MiB), 17.70 (d10-small-items), 7.90 (d10-text), 7.81 (d10-utext).
-	// 31 is the worst plus ~20 %. Container peak - idle is not used: at
-	// 320m it stays near the whole room (~240 MiB) whatever the body size,
-	// because the GC lets garbage grow into free memory. k_conv only sizes
-	// S_conv and L_conv: S_conv at 320m = (320 - 32 - 48) / 31 = 7.7 MiB.
-	DefaultBodySpoolKConv          float64 = 31
+	// k_conv: a request a protocol converter rewrites, or that is decoded
+	// whole (every converter and Forward's full decode take it). Measured
+	// in-process: peak live heap / body bytes, default GOGC, no memory
+	// limit, 3 runs at 2, 4, 8 and 16 MiB. Worst 54.13: Claude -> Gemini,
+	// GeminiMessagesCompatService.Forward on ~30-byte messages
+	// (TestRequestConversionLiveK; 39.6-52.4 at 4-16 MiB, 28.5-43.0 with
+	// text blocks). Then the Codex OAuth transform 33.2
+	// (TestBodySpoolPassthroughLiveK on an OAuth account), Responses -> Chat
+	// 25.67 (TestBodySpoolConversionLiveK). 65 is the worst plus ~20 %.
+	// Container peak - idle is not used: memory.peak saturates at
+	// memory.max. k_conv only sizes S_conv and L_conv: S_conv at 320m =
+	// (320 - 32 - 48) / 65 = 3.7 MiB.
+	DefaultBodySpoolKConv          float64 = 65
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
