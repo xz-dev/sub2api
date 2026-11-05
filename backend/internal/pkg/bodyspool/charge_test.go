@@ -1,6 +1,8 @@
 package bodyspool
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -187,51 +189,67 @@ func TestConcurrentChargeNeverCrossesLimit(t *testing.T) {
 	require.Zero(t, m.Outstanding())
 }
 
-// TestTicketedChargeUnderSmallLoad: one ticketed 256 MiB request (k_mem 0.1 ×
-// N + P_h 16 MiB + k_skel 15 × 8 MiB inline) against concurrent small
-// requests at Sub2API's 320m: whatever interleaving, the sum stays inside
-// the budget and every refusal is an explicit InsufficientMemoryError.
+// TestTicketedChargeUnderSmallLoad (task 4.2): one ticketed 256 MiB request
+// (k_mem 0.1 × N + P_h 16 MiB + k_skel 14 × 8 MiB inline, 153.6 MiB) holds
+// its charge at Sub2API's 320m with a 45 MiB working set while 120 truly
+// small requests (a 40-byte body each) ingest concurrently with the default
+// charge step and hold their charges, as during a streamed response. All of
+// them, and the ticketed one, are admitted: the charge follows k × the real
+// inline bytes in small granules, not a per-request minimum.
 func TestTicketedChargeUnderSmallLoad(t *testing.T) {
 	_, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(45*mib))
+	m.Reclaim = nil
 	const budget = (320 - 45 - 32) * mib
-	ticketed := int64(256*mib/10 + 16*mib)
-	var wg sync.WaitGroup
-	var bigErr error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		c := newCharge(t, m)
-		defer c.Release()
-		if bigErr = c.Add(ticketed); bigErr != nil {
-			return
-		}
-		for i := 0; i < 8 && bigErr == nil; i++ {
-			bigErr = c.Add(15 * mib)
-		}
-	}()
-	var otherErrs atomic.Int64
-	for i := 0; i < 32; i++ {
-		wg.Add(1)
+	const kSkel = 14
+	big := newCharge(t, m)
+	require.NoError(t, big.Add(256*mib/10+16*mib+kSkel*8*mib), "the ticketed request is admitted")
+
+	d := testDir(t)
+	body := []byte(`{"model":"gpt-5.5","input":"hi there"}`)
+	const small = 120
+	var ingested, hold sync.WaitGroup
+	ingested.Add(small)
+	hold.Add(1)
+	errs := make(chan error, small)
+	var done sync.WaitGroup
+	for i := 0; i < small; i++ {
+		done.Add(1)
 		go func() {
-			defer wg.Done()
-			c := newCharge(t, m)
-			defer c.Release()
-			for s := 0; s < 4; s++ {
-				if err := c.Add(15 * mib); err != nil {
-					var ime *InsufficientMemoryError
-					require.ErrorAs(t, err, &ime)
-					otherErrs.Add(1)
-					return
-				}
-				require.LessOrEqual(t, m.Outstanding(), int64(budget))
+			defer done.Done()
+			c, err := m.NewCharge()
+			if err != nil {
+				errs <- err
+				ingested.Done()
+				return
 			}
+			defer c.Release()
+			f, err := d.Create()
+			if err != nil {
+				errs <- err
+				ingested.Done()
+				return
+			}
+			defer func() { _ = f.Close() }()
+			_, skel, err := Ingest(bytes.NewReader(body), f, Options{Charge: func(n int64) error { return c.Add(kSkel * n) }})
+			if err == nil && !bytes.Equal(skel, body) {
+				err = errors.New("skeleton differs from the body")
+			}
+			if err != nil {
+				errs <- err
+			}
+			ingested.Done()
+			hold.Wait() // keep the charge, as a streamed response does
 		}()
 	}
-	wg.Wait()
-	if bigErr != nil {
-		var ime *InsufficientMemoryError
-		require.ErrorAs(t, bigErr, &ime)
+	ingested.Wait()
+	require.LessOrEqual(t, m.Outstanding(), int64(budget))
+	hold.Done()
+	done.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err, "a small request was refused next to the ticketed one")
 	}
+	big.Release()
 	require.Zero(t, m.Outstanding())
 }
 
