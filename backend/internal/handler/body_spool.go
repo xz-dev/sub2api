@@ -25,10 +25,15 @@ import (
 //     capacity_ticket_missing.
 //   - Covered paths (bare /v1/responses, /responses, /backend-api/codex/
 //     responses of an OpenAI group) spool tier-A media and hand on the
-//     skeleton; inline bytes above S get 413, and every 1 MiB of inline bytes
-//     is charged k_skel x 1 MiB before it is kept.
+//     skeleton; inline bytes above S get 413.
 //   - Every other POST is a fallback path: above L it gets a 413 naming the
-//     path and L; below, its bytes are charged k_path x N.
+//     path and L.
+//   - The memory charge snapshots memory.current before any byte is read.
+//     With a Content-Length, the whole worst case (k_skel x min(N, S), or
+//     k_path x min(N, L), plus the ticketed k_mem x N + P_h) is charged once,
+//     before reading. A chunked body is charged per 1 MiB as its inline (or
+//     fallback) bytes cross each step, against the same snapshot. The charge
+//     is released when the handler chain returns.
 
 const bodySpoolHop = "sub2api"
 
@@ -179,7 +184,12 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + rt.err.Error()})
 		return false
 	}
-	st := &bodySpoolState{charge: rt.meter.NewCharge()}
+	charge, err := rt.meter.NewCharge() // before any byte of this request exists
+	if err != nil {
+		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + err.Error()})
+		return false
+	}
+	st := &bodySpoolState{charge: charge}
 	c.Set(bodySpoolStateKey, st)
 	fail := func(r *capacityRefusal) bool {
 		releaseRequestBodySpool(c)
@@ -191,6 +201,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	ticket := strings.TrimSpace(c.GetHeader(bodyspool.TicketHeader))
 	c.Request.Header.Del(bodyspool.TicketHeader)
 	size := c.Request.ContentLength // -1 when chunked
+	var upfront int64
 	if ticket != "" || size >= bodyspool.TicketThreshold {
 		lease, err := bodyspool.AcquireLease(rt.cfg.LedgerDir, ticket) // before any byte is read
 		if err != nil {
@@ -201,17 +212,32 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		if n < 0 {
 			n = rt.cap // chunked: reserve the cap
 		}
-		if err := st.charge.Add(int64(rt.cfg.KMem*float64(n)) + rt.cfg.PageCacheBound); err != nil {
-			return fail(refusalFor(err, 0))
+		upfront = int64(rt.cfg.KMem*float64(n)) + rt.cfg.PageCacheBound
+	}
+	covered := isBodySpoolCoveredRequest(c)
+	limit, k := rt.cfg.FallbackLimit, rt.cfg.KPath
+	if covered {
+		limit, k = rt.cfg.InlineLimit, rt.cfg.KSkel
+		if st.lease != nil {
+			limit = rt.cfg.TicketedInlineLimit
 		}
 	}
+	// prepaid: inline (or fallback) bytes already covered by the up-front
+	// charge, rounded up to the step the readers charge in.
+	var prepaid int64
+	if size >= 0 && (covered || size <= limit) {
+		prepaid = roundUpStep(min(size, limit))
+		upfront += int64(k * float64(prepaid))
+	}
+	if err := st.charge.Add(upfront); err != nil {
+		return fail(refusalFor(err, 0))
+	}
 
-	if !isBodySpoolCoveredRequest(c) {
-		limit := rt.cfg.FallbackLimit
+	if !covered {
 		if size > limit {
 			return fail(tooLarge("%s is a fallback path; its limit is %d bytes and the body has %d", c.Request.URL.Path, limit, size))
 		}
-		c.Request.Body = &chargingReader{r: http.MaxBytesReader(c.Writer, c.Request.Body, limit), charge: st.charge, k: rt.cfg.KPath}
+		c.Request.Body = &chargingReader{r: http.MaxBytesReader(c.Writer, c.Request.Body, limit), charge: st.charge, k: k, charged: prepaid}
 		if _, err := readPrereadBody(c); err != nil {
 			if errors.As(err, new(*http.MaxBytesError)) {
 				return fail(tooLarge("%s is a fallback path; its limit is %d bytes", c.Request.URL.Path, limit))
@@ -221,10 +247,8 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		return true
 	}
 
-	inline := rt.cfg.InlineLimit
-	if st.lease != nil {
-		inline = rt.cfg.TicketedInlineLimit
-	}
+	inline := limit
+	var inlineSeen int64
 	f, err := rt.dir.Create()
 	if err != nil {
 		return fail(&capacityRefusal{http.StatusInternalServerError, "body_spool_unavailable", bodySpoolHop + ": " + err.Error()})
@@ -233,7 +257,12 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		Threshold:   rt.cfg.Threshold,
 		KeepPrefix:  bodyspool.DefaultKeepPrefix,
 		InlineLimit: inline,
-		Charge:      func(n int64) error { return st.charge.Add(int64(rt.cfg.KSkel * float64(n))) },
+		Charge: func(n int64) error {
+			if inlineSeen += n; inlineSeen <= prepaid {
+				return nil
+			}
+			return st.charge.Add(int64(k * float64(n)))
+		},
 		Observe: func(raw int64) error {
 			if raw >= bodyspool.TicketThreshold && st.lease == nil {
 				return &bodyspool.TicketError{Code: bodyspool.CodeTicketMissing, Reason: fmt.Sprintf("received %d bytes (>= %d) without a capacity ticket", raw, bodyspool.TicketThreshold)}
@@ -256,7 +285,13 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	return true
 }
 
-// chargingReader charges k x every 1 MiB before handing the bytes on.
+func roundUpStep(n int64) int64 {
+	const s = bodyspool.DefaultChargeStep
+	return (n + s - 1) / s * s
+}
+
+// chargingReader charges k x every 1 MiB past charged before handing the
+// bytes on.
 type chargingReader struct {
 	r       interface{ Read([]byte) (int, error) }
 	charge  *bodyspool.Charge

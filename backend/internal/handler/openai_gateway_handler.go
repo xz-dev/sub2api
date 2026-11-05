@@ -419,10 +419,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	// Large-request-capacity spool (no-op when disabled or already ingested).
+	// Whoever ingests releases: the BodySpoolIngest middleware after the
+	// whole chain returns, or this handler when it ingested itself.
+	_, ingested := c.Get(bodySpoolStateKey)
 	if !ingestRequestBody(c, h.cfg) {
 		return
 	}
-	defer releaseRequestBodySpool(c)
+	if !ingested {
+		defer releaseRequestBodySpool(c)
+	}
 
 	// Read request body
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
