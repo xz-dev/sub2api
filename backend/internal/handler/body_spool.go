@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -565,16 +566,29 @@ const (
 // envelope (a fallback path). The guard decodes on the request's goroutine
 // in both modes and keeps only its bounded snapshot afterwards, so the
 // charge is held with the request's and released at chain return.
+//
+// Invalid UTF-8 is charged on top, also under a k_skel envelope (k_skel is
+// measured on valid text): the guard decodes each invalid byte to U+FFFD, as
+// json.Unmarshal does, so its copies of the kept text grow by
+// securityaudit.InvalidUTF8ChargeK bytes per invalid byte at most (review
+// rr3 blocker 1).
 func chargeGuardDecode(c *gin.Context, promptReads func() bool, body []byte) *capacityRefusal {
 	v, ok := c.Get(bodySpoolStateKey)
 	if !ok || len(body) == 0 {
 		return nil
 	}
 	st := v.(*bodySpoolState)
-	if st.released || st.covered || !promptReads() {
+	if st.released || !promptReads() {
 		return nil
 	}
-	if err := st.charge.Add(chargeBytes(guardDecodeK, roundUpGranule(int64(len(body)))) + guardFixedBytes); err != nil {
+	n := int64(securityaudit.InvalidUTF8ChargeK) * int64(securityaudit.InvalidUTF8Bytes(body))
+	if !st.covered {
+		n += chargeBytes(guardDecodeK, roundUpGranule(int64(len(body)))) + guardFixedBytes
+	}
+	if n == 0 {
+		return nil
+	}
+	if err := st.charge.Add(n); err != nil {
 		return refusalFor(err, 0)
 	}
 	return nil

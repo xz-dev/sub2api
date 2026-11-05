@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +40,12 @@ func TestWorkerChargeCoversAudit(t *testing.T) {
 	}))
 	defer server.Close()
 	real := NewOpenAICompatibleScanner()
+	// The payload of a request with invalid UTF-8 text (review rr3 blocker
+	// 1): the snapshot decodes it to U+FFFD, so the worker converts nothing.
+	invalid, err := ExtractPromptSnapshot(Request{Protocol: "openai_responses",
+		Body: rawResponsesBody([2]string{"user", strings.Repeat("\xff", 512<<10)}, [2]string{"user", "x\xfe"})})
+	require.NoError(t, err)
+	require.True(t, utf8.ValidString(invalid.ScanText))
 	for _, tc := range []struct {
 		text  string
 		limit int
@@ -47,6 +54,7 @@ func TestWorkerChargeCoversAudit(t *testing.T) {
 		{strings.Repeat("<", 2<<20), MaxInputLimit},
 		{strings.Repeat("😀", 512<<10), MaxInputLimit},
 		{strings.Repeat("a", 1<<20), DefaultInputLimit},
+		{invalid.ScanText, DefaultInputLimit},
 	} {
 		// The heap is the process's: other tests' goroutines can only add to
 		// a measurement, so the least of three runs is kept.
