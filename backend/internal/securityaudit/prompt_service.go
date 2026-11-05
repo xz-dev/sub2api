@@ -127,14 +127,22 @@ func (s *PromptService) Enqueue(_ context.Context, req Request) error {
 		<-s.enqueueSlots
 		return errors.New("prompt audit service not started")
 	}
-	requestCopy := req.Clone()
+	// The snapshot is built here, on the request's goroutine, while the
+	// request still holds its memory charge. Only the snapshot goes to the
+	// background goroutine: no copy of the body, and nothing decoded from it
+	// but the bounded snapshot, outlives the handler.
+	job, err := s.enqueuer.prepare(req)
+	if job == nil {
+		<-s.enqueueSlots
+		return err
+	}
 	s.enqueueWG.Add(1)
 	go func() {
 		defer s.enqueueWG.Done()
 		defer func() { <-s.enqueueSlots }()
 		ctx, cancel := context.WithTimeout(background, 2*time.Second)
 		defer cancel()
-		_ = s.enqueuer.Enqueue(ctx, requestCopy)
+		_ = s.enqueuer.commit(ctx, job)
 	}()
 	return nil
 }

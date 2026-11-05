@@ -20,36 +20,62 @@ func NewEnqueuer(config ConfigStore, repo JobRepository, payload PayloadStore, m
 	return &Enqueuer{config: config, repo: repo, payload: payload, metrics: metric}
 }
 
+// preparedJob is what an asynchronous audit keeps after the request: the
+// snapshot (its scan text is bounded by the snapshot builder), never the body.
+type preparedJob struct {
+	cfg        ActiveConfig
+	snapshot   PromptSnapshot
+	baseFields map[string]any
+}
+
 func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
+	job, err := e.prepare(req)
+	if job == nil {
+		return err
+	}
+	return e.commit(ctx, job)
+}
+
+// prepare runs the config checks and builds the snapshot from req.Body. It
+// runs on the request's goroutine, so the body decode happens while the
+// request still holds its memory charge; nil means the request is not
+// audited (already logged), with an error only when the enqueuer is unusable.
+func (e *Enqueuer) prepare(req Request) (*preparedJob, error) {
 	if e == nil || e.config == nil || e.repo == nil || e.payload == nil {
-		return errors.New("prompt audit enqueuer unavailable")
+		return nil, errors.New("prompt audit enqueuer unavailable")
 	}
 	cfg, ok := e.config.Active()
 	baseFields := requestLogFields(req)
 	if !ok || cfg.EffectiveMode() != ModeAsync {
 		LogInfo(EventEnqueueSkipped, mergeLogFields(baseFields, map[string]any{"status": "skipped", "error_code": "mode_not_async"}))
-		return nil
+		return nil, nil
 	}
 	baseFields["config_version"] = cfg.ConfigVersion
 	if !cfg.IncludesGroup(req.GroupID) {
 		LogInfo(EventEnqueueSkipped, mergeLogFields(baseFields, map[string]any{"status": "skipped", "error_code": "group_out_of_scope"}))
-		return nil
+		return nil, nil
 	}
 	if len(cfg.EnabledEndpoints()) == 0 {
 		e.recordDropped()
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "no_enabled_endpoint"}))
-		return nil
+		return nil, nil
 	}
 	snapshot, err := ExtractPromptSnapshot(req)
 	if errors.Is(err, ErrNoPromptText) {
 		LogInfo(EventEnqueueSkipped, mergeLogFields(baseFields, map[string]any{"status": "skipped", "error_code": "no_user_text"}))
-		return nil
+		return nil, nil
 	}
 	if err != nil {
 		e.recordDropped()
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "snapshot_invalid"}))
-		return nil
+		return nil, nil
 	}
+	return &preparedJob{cfg: cfg, snapshot: snapshot, baseFields: baseFields}, nil
+}
+
+// commit stores a prepared job: staging row, payload, queue publish.
+func (e *Enqueuer) commit(ctx context.Context, p *preparedJob) error {
+	cfg, snapshot, baseFields := p.cfg, p.snapshot, p.baseFields
 	job, err := e.repo.CreateStagingWithCapacity(ctx, snapshot.Redacted(), cfg.ConfigVersion, 3, cfg.QueueCapacity)
 	if err != nil {
 		code := "database_unavailable"

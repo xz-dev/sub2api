@@ -36,9 +36,11 @@ func (c *Coordinator) Check(ctx context.Context, req Request) Decision {
 	}
 	switch mode {
 	case ModeAsync:
-		// Enqueue is deliberately best-effort. The implementation owns a bounded
-		// context and copies request memory before it can outlive the Handler.
-		_ = c.prompt.Enqueue(ctx, req.Clone())
+		// Enqueue is deliberately best-effort. The implementation builds the
+		// snapshot on this goroutine and hands only it to a bounded background
+		// context (PromptService.Enqueue), so the body is never copied: the
+		// copies made here and there outlived the handler's memory charge.
+		_ = c.prompt.Enqueue(ctx, req)
 		legacy, _ := c.checkLegacy(ctx, req)
 		return prioritize(legacy, nil)
 	case ModeBlocking:
@@ -64,7 +66,9 @@ func (c *Coordinator) checkBlocking(ctx context.Context, req Request) Decision {
 			prompt = unavailablePromptDecision(ErrorCodeUnavailable)
 			return
 		}
-		result, err := c.prompt.Evaluate(ctx, req.Clone())
+		// Evaluate is synchronous and only reads the body; wg.Wait below
+		// returns after it, so no copy is needed.
+		result, err := c.prompt.Evaluate(ctx, req)
 		if err != nil {
 			var guardErr *GuardError
 			if errors.As(err, &guardErr) && guardErr.Code == ErrorCodeInvalidResponse {

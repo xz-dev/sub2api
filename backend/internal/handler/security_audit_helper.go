@@ -75,9 +75,13 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			return nil
 		}
 	}
+	promptReads := func() bool { return coordinator.PromptMode() != securityaudit.ModeOff }
 	body, refusal := auditBodyForSpool(c, func() bool {
 		return legacy.ModeratesRequest(c.Request.Context(), buildContentModerationInput(c, apiKey, subject, protocol, model, body))
-	}, func() bool { return coordinator.PromptMode() != securityaudit.ModeOff }, body)
+	}, promptReads, body)
+	if refusal == nil {
+		refusal = chargeGuardDecode(c, promptReads, body)
+	}
 	if refusal != nil {
 		c.Set(bodySpoolAuditRefusalKey, refusal)
 		return &securityaudit.Decision{Kind: securityaudit.DecisionBlock, HTTPStatus: refusal.status, ErrorCode: refusal.code, ClientMessage: refusal.message}
