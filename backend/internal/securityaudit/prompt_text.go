@@ -7,27 +7,71 @@ import (
 	"unicode/utf8"
 )
 
-// promptPieces is the text texts[0] + joiner + texts[1] + ..., read in place.
-// The snapshot computes the metadata text's hash, rune count, preview head
-// and stored prompt from it without ever building the joined text (review
+// promptPieces is a text made of pieces with joiner between them, read in
+// place: the segments in spans, in order, or texts when segs is nil. The
+// snapshot computes the metadata text's hash, rune count, preview head and
+// stored prompt from it without ever building the joined text (review
 // a4a7d843 blocker 2: the joined copy, a []rune copy of it and regex passes
 // over it made the guard's cost a multiple of the body).
 type promptPieces struct {
+	segs   *promptSegments
+	spans  []segmentSpan
 	texts  []string
 	joiner string
+}
+
+// count is the number of pieces.
+func (p promptPieces) count() int {
+	if p.segs == nil {
+		return len(p.texts)
+	}
+	n := 0
+	for _, span := range p.spans {
+		n += span.to - span.from
+	}
+	return n
+}
+
+// first is the first piece, "" when there is none.
+func (p promptPieces) first() string {
+	text := ""
+	p.eachPiece(func(s string) bool {
+		text = s
+		return false
+	})
+	return text
+}
+
+// eachPiece calls f with every piece in order, until f returns false.
+func (p promptPieces) eachPiece(f func(string) bool) {
+	if p.segs == nil {
+		for _, text := range p.texts {
+			if !f(text) {
+				return
+			}
+		}
+		return
+	}
+	for _, span := range p.spans {
+		for i := span.from; i < span.to; i++ {
+			if !f(p.segs.text(i)) {
+				return
+			}
+		}
+	}
 }
 
 // each calls f with every piece of the text in order, joiners included, until
 // f returns false.
 func (p promptPieces) each(f func(string) bool) {
-	for index, text := range p.texts {
-		if index > 0 && p.joiner != "" && !f(p.joiner) {
-			return
+	started := false
+	p.eachPiece(func(s string) bool {
+		if started && p.joiner != "" && !f(p.joiner) {
+			return false
 		}
-		if !f(text) {
-			return
-		}
-	}
+		started = true
+		return f(s)
+	})
 }
 
 // sha256 is sha256.Sum256 of the joined text, hashed through a small buffer.
@@ -61,8 +105,8 @@ func (p promptPieces) runeCount() int {
 // head is the joined text's first n bytes at most, cut back to a rune start.
 // It copies at most n bytes, and nothing when the first piece is long enough.
 func (p promptPieces) head(n int) string {
-	if len(p.texts) > 0 && len(p.texts[0]) >= n {
-		return cutToRuneStart(p.texts[0], n)
+	if first := p.first(); len(first) >= n {
+		return cutToRuneStart(first, n)
 	}
 	var b strings.Builder
 	p.each(func(s string) bool {
