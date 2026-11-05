@@ -1,7 +1,6 @@
 package securityaudit
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,15 +45,21 @@ func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, er
 		return PromptSnapshot{}, errors.New("prompt audit request JSON is invalid")
 	}
 	extracted := extractProtocolSegments(req.Protocol, document)
-	segments := normalizeSegmentsLatestUserFirst(extracted)
+	segments, priority := normalizeSegmentsLatestUserFirst(extracted), 1
 	if latestTurnOnly {
-		segments = blockingSegmentsLatestUserAndPreviousOutput(extracted)
+		segments, priority = blockingSegmentsLatestUserAndPreviousOutput(extracted)
 	}
 	if len(segments) == 0 {
 		return PromptSnapshot{}, ErrNoPromptText
 	}
-	scanText, metadataText := buildPrioritizedScanText(segments)
-	digest := sha256.Sum256([]byte(metadataText))
+	// The metadata text (every segment joined by "\n\n") is never built:
+	// its hash, length, preview and stored prompt are computed from the
+	// segments, so the only copy of the text is the scan text the guard
+	// reads (none at all for a single segment). Review a4a7d843 blocker 2.
+	scanText := buildPrioritizedScanText(segments, priority)
+	metadata := promptPieces{texts: segments, joiner: "\n\n"}
+	digest := metadata.sha256()
+	messageCount := len(segments) - (priority - 1) // the priority parts are one message
 	stage := strings.TrimSpace(req.Stage)
 	if stage == "" {
 		stage = "http"
@@ -64,9 +69,9 @@ func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, er
 		UserEmailSnapshot: req.UserEmail, APIKeyID: req.APIKeyID, APIKeyNameSnapshot: req.APIKeyName,
 		GroupID: cloneInt64Ptr(req.GroupID), GroupName: req.GroupName, Provider: req.Provider,
 		Endpoint: req.Endpoint, Protocol: req.Protocol, Model: req.Model,
-		PromptHash: hex.EncodeToString(digest[:]), RedactedPreview: BuildPromptPreview(metadataText, DefaultPromptPreviewMaxRunes),
-		FullPrompt:   BuildFullPrompt(metadataText, DefaultFullPromptMaxRunes),
-		PromptLength: utf8.RuneCountInString(metadataText), MessageCount: len(segments), Stage: stage,
+		PromptHash: hex.EncodeToString(digest[:]), RedactedPreview: BuildPromptPreview(metadata.head(promptPreviewInputBytes), DefaultPromptPreviewMaxRunes),
+		FullPrompt:   metadata.fullPrompt(DefaultFullPromptMaxRunes),
+		PromptLength: metadata.runeCount(), MessageCount: messageCount, Stage: stage,
 		ScanText: scanText,
 	}, nil
 }
@@ -74,6 +79,17 @@ func extractPromptSnapshot(req Request, latestTurnOnly bool) (PromptSnapshot, er
 // DefaultPromptPreviewMaxRunes caps how much sanitized prompt text may be
 // considered before BuildPromptPreview withholds the majority for storage/UI.
 const DefaultPromptPreviewMaxRunes = 96
+
+// promptPreviewInputBytes bounds the head of the prompt that the preview's
+// redaction regexes read. The preview keeps at most the first
+// DefaultPromptPreviewMaxRunes runes of the redacted text, so it reads a head
+// of 16 KiB, not the whole prompt (review a4a7d843 blocker 2: five regex
+// passes, each copying the whole text twice). The guard's scan text is not
+// affected. The preview differs from a whole-text preview only when the
+// redactions shrink the head below DefaultPromptPreviewMaxRunes+1 runes (a
+// secret or separator run of about 16 KiB near the start); FullPrompt stores
+// the unredacted text anyway.
+const promptPreviewInputBytes = 16 << 10
 
 // DefaultFullPromptMaxRunes caps how much unredacted prompt text is persisted
 // on an audit event for admin review. It is deliberately generous so realistic
@@ -536,26 +552,27 @@ func normalizeSegmentsLatestUserFirst(values []promptSegment) []string {
 // the current user turn and the nearest preceding assistant/model turn. It is
 // deliberately opt-in because full transcript scanning remains stronger at
 // finding client-controlled content placed in older or non-user messages.
-func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []string {
+//
+// The latest turn's parts are returned as the first priority segments, not
+// joined: buildPrioritizedScanText joins them with the same "\n\n", so the
+// scan text is unchanged and no extra copy is made.
+func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) (segments []string, priority int) {
 	normalized := normalizedPromptSegments(values)
 	latestUserStart := latestUserSegmentStart(normalized)
 	if latestUserStart < 0 {
 		// A request without user content cannot be narrowed safely. Preserve the
 		// established full-snapshot behavior for unusual protocol payloads.
-		return normalizeSegmentsLatestUserFirst(values)
+		return normalizeSegmentsLatestUserFirst(values), 1
 	}
 	latestUserEnd := latestUserStart
 	for latestUserEnd < len(normalized) && isUserSegment(normalized[latestUserEnd]) {
 		latestUserEnd++
 	}
-	currentUserText := make([]string, 0, latestUserEnd-latestUserStart)
-	for _, segment := range normalized[latestUserStart:latestUserEnd] {
-		currentUserText = append(currentUserText, segment.text)
-	}
-	// A single client turn may have several text content parts. Keep it in one
-	// priority segment so every part of the latest input is scanned before the
-	// prior output begins.
-	selected := []promptSegment{{text: strings.Join(currentUserText, "\n\n"), user: true, role: "user"}}
+	// A single client turn may have several text content parts. Keep them in
+	// the priority segment so every part of the latest input is scanned before
+	// the prior output begins.
+	selected := normalized[latestUserStart:latestUserEnd:latestUserEnd]
+	priority = len(selected)
 	for index := latestUserStart - 1; index >= 0; index-- {
 		if !isAssistantOutputSegment(normalized[index]) {
 			continue
@@ -567,7 +584,7 @@ func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) []strin
 		selected = append(selected, normalized[start:index+1]...)
 		break
 	}
-	return promptSegmentTexts(selected)
+	return promptSegmentTexts(selected), priority
 }
 
 func normalizedPromptSegments(values []promptSegment) []promptSegment {
@@ -611,12 +628,35 @@ func promptSegmentTexts(values []promptSegment) []string {
 	return result
 }
 
-func buildPrioritizedScanText(segments []string) (scanText string, metadataText string) {
-	metadataText = strings.Join(segments, "\n\n")
-	if len(segments) <= 1 {
-		return metadataText, metadataText
+// buildPrioritizedScanText joins the first priority segments, the priority
+// separator and the remaining segments, with "\n\n" between segments, in one
+// allocation of the exact size. A single segment is returned as it is.
+func buildPrioritizedScanText(segments []string, priority int) string {
+	if len(segments) == 1 {
+		return segments[0]
 	}
-	return segments[0] + promptAuditPrioritySeparator + strings.Join(segments[1:], "\n\n"), metadataText
+	priority = max(1, min(priority, len(segments)))
+	size := 0
+	for _, segment := range segments {
+		size += len(segment)
+	}
+	size += 2 * (len(segments) - 1)
+	if priority < len(segments) {
+		size += len(promptAuditPrioritySeparator) - 2
+	}
+	var b strings.Builder
+	b.Grow(size)
+	for index, segment := range segments {
+		switch {
+		case index == 0:
+		case index == priority:
+			b.WriteString(promptAuditPrioritySeparator)
+		default:
+			b.WriteString("\n\n")
+		}
+		b.WriteString(segment)
+	}
+	return b.String()
 }
 
 func promptSegmentsForRole(texts []string, role string) []promptSegment {
@@ -694,11 +734,7 @@ func BuildPromptPreview(value string, maxRunes int) string {
 // admin review, without redaction. NUL bytes are stripped because PostgreSQL
 // TEXT rejects them, and the result is capped at maxRunes.
 func BuildFullPrompt(value string, maxRunes int) string {
-	if maxRunes <= 0 {
-		maxRunes = DefaultFullPromptMaxRunes
-	}
-	value = strings.ReplaceAll(value, "\x00", "")
-	return TrimRunes(strings.TrimSpace(value), maxRunes)
+	return promptPieces{texts: []string{value}}.fullPrompt(maxRunes)
 }
 
 // FullPromptFromScanText reconstructs the display prompt from the worker scan
@@ -706,18 +742,34 @@ func BuildFullPrompt(value string, maxRunes int) string {
 // between the prioritized segment and the remainder, so replacing it with the
 // metadata joiner yields the original multi-segment text.
 func FullPromptFromScanText(scanText string) string {
-	return BuildFullPrompt(strings.ReplaceAll(scanText, promptAuditPrioritySeparator, "\n\n"), DefaultFullPromptMaxRunes)
+	pieces := promptPieces{texts: strings.Split(scanText, promptAuditPrioritySeparator), joiner: "\n\n"}
+	return pieces.fullPrompt(DefaultFullPromptMaxRunes)
 }
 
+// TrimRunes returns value when it has at most limit runes, else its first
+// limit runes and "…". It walks value in place: only the result is
+// allocated, never a []rune copy of the whole value.
 func TrimRunes(value string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
+	count := 0
+	for index := range value {
+		if count == limit {
+			return keepRunes(value[:index]) + "…"
+		}
+		count++
 	}
-	return string(runes[:limit]) + "…"
+	return value
+}
+
+// keepRunes is head as string([]rune(head)) would return it: invalid UTF-8
+// bytes become U+FFFD, as the []rune conversion TrimRunes used to make did.
+func keepRunes(head string) string {
+	if utf8.ValidString(head) {
+		return head
+	}
+	return string([]rune(head))
 }
 
 func stringValue(value any) string {
