@@ -33,6 +33,15 @@ func liveHeap() uint64 {
 	return s[0].Value.Uint64()
 }
 
+// settledLiveHeap is the live heap after the pools' victim caches are gone:
+// a sync.Pool keeps what it was given (json's encoder buffer, the loggers')
+// for one more GC, and under -race it drops items at random.
+func settledLiveHeap() uint64 {
+	runtime.GC()
+	runtime.GC()
+	return liveHeap()
+}
+
 // largeTranscriptBody is a Responses body of about size bytes: many tool
 // calls and outputs, like the Codex transcripts the large-request work uses.
 func largeTranscriptBody(size int) []byte {
@@ -89,6 +98,13 @@ func TestPromptServiceAsyncKeepsNoBodyAfterEnqueue(t *testing.T) {
 // the snapshot handed to the commit goroutine holds all the text the guard
 // reads. Its share of the request's charge is held from Enqueue until the
 // goroutine has dropped the job, and it covers the heap the job keeps.
+//
+// Review rr3 major: the heap the job keeps is measured from a settled heap
+// taken before the body exists (the body is built without json's pooled
+// encoder) to a settled heap while the commit waits, with the body
+// dropped; the text the body was built from stays live in both. Before,
+// the base included the encoder's pooled buffer, so "kept" was negative
+// without -race and the test failed under it.
 func TestPromptServiceAsyncHoldsChargeUntilCommitDone(t *testing.T) {
 	repo := &blockingJobRepository{entered: make(chan struct{}), release: make(chan struct{})}
 	repo.createJob = &Job{ID: 7}
@@ -96,11 +112,12 @@ func TestPromptServiceAsyncHoldsChargeUntilCommitDone(t *testing.T) {
 	svc := &PromptService{config: cfg, enqueuer: NewEnqueuer(cfg, repo, &fakePayloadStore{values: map[int64]string{}}),
 		enqueueSlots: make(chan struct{}, 1), background: context.Background()}
 
-	text := strings.Repeat("pasted text the guard reads\n", (4<<20)/28)
+	text := strings.Repeat("pasted text the guard reads ", (4<<20)/28)
 	for _, segments := range []int{1, 2} {
 		parts := [][2]string{{"user", text}, {"assistant", text}}[:segments]
-		body := responsesTextBody(parts...) // one segment: the scan text is a substring; two: joined
-		base := liveHeap() - uint64(len(body))
+		base := settledLiveHeap()
+		// One segment: the scan text is the arena's only segment; two: joined.
+		body := rawResponsesBody(parts...)
 		var held atomic.Int64
 		var released atomic.Bool
 		retain := func(n int64) func() {
@@ -110,12 +127,15 @@ func TestPromptServiceAsyncHoldsChargeUntilCommitDone(t *testing.T) {
 		require.NoError(t, svc.Enqueue(context.Background(), Request{RequestID: "r", Protocol: "openai_responses", Body: body, RetainMemory: retain}))
 		body = nil
 		<-repo.entered
-		kept := int64(liveHeap()) - int64(base)
+		kept := int64(settledLiveHeap()) - int64(base)
+		t.Logf("%d segments: the job keeps %d B, the hold is %d B (%.3f)", segments, kept, held.Load(), float64(held.Load())/float64(kept))
 		require.False(t, released.Load(), "released while the commit still holds the snapshot")
+		require.Greater(t, kept, int64(len(text))*int64(segments), "the job keeps the scan text")
 		require.GreaterOrEqual(t, held.Load(), kept, "the hold covers the heap the job keeps")
 		repo.release <- struct{}{}
 		svc.enqueueWG.Wait()
 		require.True(t, released.Load(), "released once the commit is done")
 		repo.entered = make(chan struct{})
+		runtime.KeepAlive(text)
 	}
 }
