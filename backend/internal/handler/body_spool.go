@@ -70,12 +70,11 @@ func bodySpoolRuntimeFor(cfg *config.Config) *bodySpoolRuntime {
 	}
 	rt := &bodySpoolRuntime{cfg: cfg.Gateway.BodySpool.Effective(), cap: gatewayMaxBodySize(cfg)}
 	if rt.dir, rt.err = bodyspool.OpenDir(rt.cfg.Dir, rt.cfg.DiskReserve); rt.err == nil {
-		rt.meter, rt.err = bodyspool.OpenMeter(rt.cfg.CgroupDir)
+		// One meter per cgroup in the process: the async prompt audit worker
+		// charges the same budget (securityaudit.MemoryBudget).
+		rt.meter, rt.err = bodyspool.SharedMeter(rt.cfg.CgroupDir)
 	}
-	v, loaded := bodySpoolRuntimes.LoadOrStore(cfg, rt)
-	if loaded && rt.meter != nil {
-		rt.meter.Close()
-	}
+	v, _ := bodySpoolRuntimes.LoadOrStore(cfg, rt)
 	return v.(*bodySpoolRuntime)
 }
 

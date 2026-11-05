@@ -12,6 +12,9 @@ import (
 type PayloadStore interface {
 	Set(ctx context.Context, jobID int64, scanText string, ttl time.Duration) error
 	Get(ctx context.Context, jobID int64) (string, error)
+	// Len is the payload's size in bytes (0 when it is missing), read
+	// before Get so the worker can charge the read first.
+	Len(ctx context.Context, jobID int64) (int64, error)
 	Delete(ctx context.Context, jobID int64) error
 	Ping(ctx context.Context) error
 }
@@ -42,6 +45,13 @@ func (s *RedisPayloadStore) Get(ctx context.Context, jobID int64) (string, error
 		return "", fmt.Errorf("prompt audit payload store unavailable")
 	}
 	return s.client.Get(ctx, payloadKey(jobID)).Result()
+}
+
+func (s *RedisPayloadStore) Len(ctx context.Context, jobID int64) (int64, error) {
+	if s == nil || s.client == nil {
+		return 0, fmt.Errorf("prompt audit payload store unavailable")
+	}
+	return s.client.StrLen(ctx, payloadKey(jobID)).Result()
 }
 
 func (s *RedisPayloadStore) Delete(ctx context.Context, jobID int64) error {
