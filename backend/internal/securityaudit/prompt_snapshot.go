@@ -275,7 +275,7 @@ func BuildFullPrompt(value string, maxRunes int) string {
 // between the prioritized segment and the remainder, so replacing it with the
 // metadata joiner yields the original multi-segment text.
 func FullPromptFromScanText(scanText string) string {
-	pieces := promptPieces{texts: strings.Split(scanText, promptAuditPrioritySeparator), joiner: "\n\n"}
+	pieces := promptPieces{texts: []string{scanText}, splitOn: promptAuditPrioritySeparator, joiner: "\n\n"}
 	return pieces.fullPrompt(DefaultFullPromptMaxRunes)
 }
 

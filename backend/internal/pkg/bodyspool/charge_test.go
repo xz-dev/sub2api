@@ -2,6 +2,7 @@ package bodyspool
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -368,4 +369,65 @@ func TestChargeDetachOutlivesRelease(t *testing.T) {
 	require.EqualValues(t, mib, m.Outstanding())
 	release()
 	require.Zero(t, m.Outstanding())
+}
+
+// TestMeterAcquireWaitsForRelease: background work that does not fit waits,
+// running wait before each wait, until a charge is released; then it holds
+// its bytes until its release func runs, once. ctx and wait end the wait.
+func TestMeterAcquireWaitsForRelease(t *testing.T) {
+	_, m := fakeCgroup(t, strconv.Itoa(100*mib), "0")
+	m.Reclaim = nil
+	req, err := m.NewCharge()
+	require.NoError(t, err)
+	require.NoError(t, req.Add(50*mib)) // free: 100 - 32 - 50 = 18 MiB
+
+	waits := make(chan struct{}, 8)
+	type result struct {
+		release func()
+		err     error
+	}
+	got := make(chan result, 1)
+	go func() {
+		release, err := m.Acquire(context.Background(), 30*mib, func() error { waits <- struct{}{}; return nil })
+		got <- result{release, err}
+	}()
+	<-waits
+	select {
+	case r := <-got:
+		t.Fatalf("acquired %v while 30 MiB did not fit", r.err)
+	default:
+	}
+	require.EqualValues(t, 50*mib, m.Outstanding())
+	req.Release() // the request ends: the waiting work wakes and fits
+	r := <-got
+	require.NoError(t, r.err)
+	require.EqualValues(t, 30*mib, m.Outstanding())
+	r.release()
+	r.release()
+	require.Zero(t, m.Outstanding())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	big := make(chan error, 1)
+	go func() {
+		_, err := m.Acquire(ctx, 80*mib, func() error { waits <- struct{}{}; return nil })
+		big <- err
+	}()
+	<-waits
+	cancel()
+	require.ErrorIs(t, <-big, context.Canceled)
+	stop := errors.New("lease lost")
+	_, err = m.Acquire(context.Background(), 80*mib, func() error { return stop })
+	require.ErrorIs(t, err, stop)
+	require.Zero(t, m.Outstanding())
+}
+
+// TestSharedMeterIsOnePerCgroup: every caller for a cgroup shares one
+// outstanding counter.
+func TestSharedMeterIsOnePerCgroup(t *testing.T) {
+	dir, _ := fakeCgroup(t, strconv.Itoa(100*mib), "0")
+	a, err := SharedMeter(dir)
+	require.NoError(t, err)
+	b, err := SharedMeter(dir)
+	require.NoError(t, err)
+	require.Same(t, a, b)
 }

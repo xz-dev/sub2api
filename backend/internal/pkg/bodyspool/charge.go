@@ -2,6 +2,7 @@ package bodyspool
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -67,6 +68,11 @@ type Meter struct {
 	ReleaseReclaim     func()
 	releaseRunning     atomic.Bool
 	lastReleaseReclaim time.Time // guarded by reclaimMu
+
+	// released is closed, and dropped, when charged bytes are returned or
+	// freed heap is returned to the OS: Acquire waits on it.
+	releasedMu sync.Mutex
+	released   chan struct{}
 }
 
 // ReclaimAfterRelease is the smallest finished charge after which the
@@ -264,7 +270,12 @@ func (c *Charge) Detach(n int64) (release func()) {
 		m := min(n, have)
 		if c.n.CompareAndSwap(have, have-m) {
 			var once sync.Once
-			return func() { once.Do(func() { c.m.outstanding.Add(-m) }) }
+			return func() {
+				once.Do(func() {
+					c.m.outstanding.Add(-m)
+					c.m.notifyReleased()
+				})
+			}
 		}
 	}
 }
@@ -276,6 +287,7 @@ func (c *Charge) Release() {
 	}
 	if n := c.n.Swap(0); n > 0 {
 		c.m.outstanding.Add(-n)
+		c.m.notifyReleased()
 	}
 }
 
@@ -296,6 +308,82 @@ func (m *Meter) ReclaimReleased() {
 		if time.Since(m.lastReleaseReclaim) >= reclaimInterval {
 			fn()
 			m.lastReleaseReclaim = time.Now()
+			m.notifyReleased()
 		}
 	}()
+}
+
+func (m *Meter) releasedSignal() <-chan struct{} {
+	m.releasedMu.Lock()
+	defer m.releasedMu.Unlock()
+	if m.released == nil {
+		m.released = make(chan struct{})
+	}
+	return m.released
+}
+
+func (m *Meter) notifyReleased() {
+	m.releasedMu.Lock()
+	defer m.releasedMu.Unlock()
+	if m.released != nil {
+		close(m.released)
+		m.released = nil
+	}
+}
+
+// Acquire charges n bytes for background work that belongs to no request
+// (the async prompt audit's re-read of its payload), with the same check as
+// a request's first step. When they do not fit it waits until charged bytes
+// are released or freed heap is returned to the OS, then checks again with a
+// fresh working-set snapshot. It never gives up on its own and has no timer:
+// only ctx, an error of wait (run before each wait, e.g. to keep a lease) or
+// an unreadable cgroup end it. The returned func releases the bytes, once.
+func (m *Meter) Acquire(ctx context.Context, n int64, wait func() error) (release func(), err error) {
+	for {
+		released := m.releasedSignal() // before the check: a release in between still wakes us
+		c, err := m.NewCharge()
+		if err != nil {
+			return nil, err
+		}
+		err = c.Add(n)
+		if err == nil {
+			var once sync.Once
+			return func() { once.Do(c.Release) }, nil
+		}
+		var ime *InsufficientMemoryError
+		if !errors.As(err, &ime) {
+			return nil, err
+		}
+		if wait != nil {
+			if err := wait(); err != nil {
+				return nil, err
+			}
+		}
+		select {
+		case <-released:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+var sharedMeters sync.Map // cgroup dir -> *Meter
+
+// SharedMeter is the process's one Meter for the cgroup in dir (as
+// OpenMeter). Every user of the hop's memory budget (the body spool ingest
+// and the async prompt audit worker) must share one outstanding counter, or
+// each would admit up to the whole headroom. It is never closed.
+func SharedMeter(dir string) (*Meter, error) {
+	if v, ok := sharedMeters.Load(dir); ok {
+		return v.(*Meter), nil
+	}
+	m, err := OpenMeter(dir)
+	if err != nil {
+		return nil, err
+	}
+	if v, loaded := sharedMeters.LoadOrStore(dir, m); loaded {
+		m.Close()
+		return v.(*Meter), nil
+	}
+	return m, nil
 }
