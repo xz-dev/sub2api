@@ -86,6 +86,10 @@ type bodySpoolState struct {
 	lease    *bodyspool.Lease
 	charge   *bodyspool.Charge
 	released bool
+	// covered: the charge is k_skel × the inline bytes, an envelope measured
+	// with the prompt guard on. Fallback paths (k_path) have no such
+	// envelope, so the guard's decode is charged on top (chargeGuardDecode).
+	covered bool
 	// chargedAtRelease is the charge's size when it was released; it tells
 	// ReleaseLargeRequestState whether this was a large request.
 	chargedAtRelease int64
@@ -274,6 +278,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		upfront = int64(rt.cfg.KMem*float64(n)) + rt.cfg.PageCacheBound
 	}
 	covered := isBodySpoolCoveredRequest(c)
+	st.covered = covered
 	limit, k := rt.cfg.FallbackLimit, rt.cfg.KPath
 	if covered {
 		limit, k = rt.cfg.InlineLimit, rt.cfg.KSkel
@@ -454,6 +459,33 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 		return nil, refusalFor(err, 0)
 	}
 	return redacted, nil
+}
+
+// guardDecodeK bounds the prompt guard's snapshot decode (json.Unmarshal of
+// the whole body into any, then the segments and scan text) as a multiple of
+// the body size. Measured in-process with GC off (allocated bytes / body
+// bytes, an upper bound of the decode's peak) over the large-request corpus:
+// 2.35 (D10 text-16), 2.30 (D10 text-32), 1.24 (M0 text-16), 1.31 (text-8).
+const guardDecodeK = 3.0
+
+// chargeGuardDecode charges the prompt guard's decode before it allocates,
+// when the guard reads this request's body and the request has no k_skel
+// envelope (a fallback path). The guard decodes on the request's goroutine
+// in both modes and keeps only its bounded snapshot afterwards, so the
+// charge is held with the request's and released at chain return.
+func chargeGuardDecode(c *gin.Context, promptReads func() bool, body []byte) *capacityRefusal {
+	v, ok := c.Get(bodySpoolStateKey)
+	if !ok || len(body) == 0 {
+		return nil
+	}
+	st := v.(*bodySpoolState)
+	if st.released || st.covered || !promptReads() {
+		return nil
+	}
+	if err := st.charge.Add(chargeBytes(guardDecodeK, roundUpGranule(int64(len(body))))); err != nil {
+		return refusalFor(err, 0)
+	}
+	return nil
 }
 
 // writeBodySpoolAuditRefusal writes the refusal auditBodyForSpool returned

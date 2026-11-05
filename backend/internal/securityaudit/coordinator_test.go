@@ -28,14 +28,23 @@ type fakePromptEngine struct {
 	err       error
 	enqueues  atomic.Int64
 	evaluates atomic.Int64
+	bodies    chan []byte
+}
+
+func (f *fakePromptEngine) saw(body []byte) {
+	if f.bodies != nil {
+		f.bodies <- body
+	}
 }
 
 func (f *fakePromptEngine) EffectiveMode() Mode { return f.mode }
-func (f *fakePromptEngine) Enqueue(context.Context, Request) error {
+func (f *fakePromptEngine) Enqueue(_ context.Context, req Request) error {
+	f.saw(req.Body)
 	f.enqueues.Add(1)
 	return f.err
 }
-func (f *fakePromptEngine) Evaluate(context.Context, Request) (*PromptDecision, error) {
+func (f *fakePromptEngine) Evaluate(_ context.Context, req Request) (*PromptDecision, error) {
+	f.saw(req.Body)
 	f.evaluates.Add(1)
 	return f.decision, f.err
 }
@@ -172,5 +181,20 @@ func TestCoordinatorAsyncEnqueueFailuresNeverChangeResponseOrDownstreamDispatch(
 		require.Equal(t, 1, downstreamDispatches)
 		require.Equal(t, int64(1), prompt.enqueues.Load())
 		require.Zero(t, prompt.evaluates.Load())
+	}
+}
+
+// TestCoordinatorDoesNotCopyBody: the coordinator hands the request's own
+// body to the prompt engine in both modes. PromptService.Enqueue makes the one
+// copy that may outlive the handler; a second copy here doubled the
+// uncharged memory of a large request.
+func TestCoordinatorDoesNotCopyBody(t *testing.T) {
+	body := []byte(`{"input":"hello"}`)
+	for _, mode := range []Mode{ModeAsync, ModeBlocking} {
+		engine := &fakePromptEngine{mode: mode, decision: &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, bodies: make(chan []byte, 1)}
+		NewCoordinator(nil, engine).Check(context.Background(), Request{Body: body})
+		got := <-engine.bodies
+		require.Len(t, got, len(body), mode)
+		require.Same(t, &body[0], &got[0], "mode %s: the coordinator copied the body", mode)
 	}
 }
