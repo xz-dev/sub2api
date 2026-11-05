@@ -1,6 +1,7 @@
 package securityaudit
 
 import (
+	"bytes"
 	"encoding/json"
 	"math/rand"
 	"strings"
@@ -29,6 +30,24 @@ func responsesTextBody(parts ...[2]string) []byte {
 	}
 	body, _ := json.Marshal(map[string]any{"model": "m", "instructions": "be brief", "input": input})
 	return body
+}
+
+// rawResponsesBody is a Responses body of message items whose texts are
+// written as they are, invalid UTF-8 included (json.Marshal would replace
+// it). Texts must not need escapes.
+func rawResponsesBody(parts ...[2]string) []byte {
+	var b bytes.Buffer
+	b.WriteString(`{"model":"m","input":[`)
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"type":"message","role":"` + p[0] + `","content":[{"type":"input_text","text":"`)
+		b.WriteString(p[1])
+		b.WriteString(`"}]}`)
+	}
+	b.WriteString(`]}`)
+	return b.Bytes()
 }
 
 // TestPromptSnapshotUnchangedByInPlaceText: the snapshot the guard gets (scan

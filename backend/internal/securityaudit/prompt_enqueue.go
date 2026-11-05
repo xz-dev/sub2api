@@ -33,8 +33,14 @@ type preparedJob struct {
 }
 
 // preparedJobOverhead bounds the job's fixed part: the snapshot's metadata
-// strings and the log fields.
+// strings and the log fields (measured 2.5-8.3 KB).
 const preparedJobOverhead = 16 << 10
+
+// heapBytes is an upper bound of the heap an n-byte string takes: a string
+// above 32 KiB takes whole 8 KiB pages, a smaller one a size class that is
+// never above the next 8 KiB multiple. The stored prompt (65,539 bytes)
+// takes 73,728 (review rr3 major).
+func heapBytes(n int64) int64 { return (n + 8191) &^ 8191 }
 
 func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 	job, err := e.prepare(req)
@@ -85,7 +91,8 @@ func (e *Enqueuer) prepare(req Request) (*preparedJob, error) {
 	if snapshot.MessageCount <= 1 {
 		text = max(text, int64(len(req.Body)))
 	}
-	retained := text + int64(len(snapshot.FullPrompt)+len(snapshot.RedactedPreview)) + preparedJobOverhead
+	retained := heapBytes(text) + heapBytes(int64(len(snapshot.FullPrompt))) +
+		heapBytes(int64(len(snapshot.RedactedPreview))) + preparedJobOverhead
 	return &preparedJob{cfg: cfg, snapshot: snapshot, baseFields: baseFields, retained: retained}, nil
 }
 
