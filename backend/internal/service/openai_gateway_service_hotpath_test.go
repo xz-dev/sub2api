@@ -56,7 +56,7 @@ func TestOpenAIRequestView_KeepsLenientPrefixExtraction(t *testing.T) {
 func TestOpenAIRequestView_DecodeKeepsFullMapBehavior(t *testing.T) {
 	view := newOpenAIRequestView([]byte(`{"model":"gpt-5","stream":true,"input":[{"type":"message","content":"hi"}]}`))
 
-	reqBody, err := view.Decode(nil)
+	reqBody, err := view.DecodeFullBody()
 	require.NoError(t, err)
 	require.Equal(t, "gpt-5", reqBody["model"])
 	require.IsType(t, []any{}, reqBody["input"])
