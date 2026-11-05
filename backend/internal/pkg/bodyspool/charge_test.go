@@ -342,3 +342,30 @@ func TestReclaimReleasedIsRateLimited(t *testing.T) {
 	}
 	require.Zero(t, m.Outstanding())
 }
+
+// TestChargeDetachOutlivesRelease: detached bytes stay outstanding after the
+// request's Release until their own release, which runs once.
+func TestChargeDetachOutlivesRelease(t *testing.T) {
+	_, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(40*mib))
+	c, err := m.NewCharge()
+	require.NoError(t, err)
+	require.NoError(t, c.Add(10*mib))
+	release := c.Detach(3 * mib)
+	require.EqualValues(t, 7*mib, c.Bytes())
+	require.EqualValues(t, 10*mib, m.Outstanding())
+	c.Release()
+	require.EqualValues(t, 3*mib, m.Outstanding(), "detached bytes outlive the request's release")
+	release()
+	release()
+	require.Zero(t, m.Outstanding())
+
+	c, err = m.NewCharge()
+	require.NoError(t, err)
+	require.NoError(t, c.Add(mib))
+	release = c.Detach(5 * mib) // at most what is charged
+	require.Zero(t, c.Bytes())
+	c.Release()
+	require.EqualValues(t, mib, m.Outstanding())
+	release()
+	require.Zero(t, m.Outstanding())
+}
