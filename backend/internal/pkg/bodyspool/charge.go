@@ -56,7 +56,24 @@ type Meter struct {
 	Reclaim       func()
 	reclaimMu     sync.Mutex
 	lastReclaimed time.Time
+
+	// ReleaseReclaim (debug.FreeOSMemory) is run in the background by
+	// ReclaimReleased, after a request whose charge was at least
+	// ReclaimAfterRelease has finished and dropped its references. A large
+	// request's buffers become garbage when it ends, but the Go heap keeps
+	// them until a later GC and returns the pages to the OS only slowly, so
+	// the next request's working-set snapshot counted them (start working
+	// set 48 → 131 → 171 MiB over five 256 MiB turns).
+	ReleaseReclaim     func()
+	releaseRunning     atomic.Bool
+	lastReleaseReclaim time.Time // guarded by reclaimMu
 }
+
+// ReclaimAfterRelease is the smallest finished charge after which the
+// caller should call ReclaimReleased. Smaller requests leave less garbage
+// than the GC's own headroom over the baseline live heap, so the GC pacer
+// covers them.
+const ReclaimAfterRelease int64 = 16 << 20
 
 // reclaimInterval rate-limits Reclaim across concurrent refusals.
 const reclaimInterval = time.Second
@@ -95,7 +112,7 @@ func OpenMeter(dir string) (*Meter, error) {
 		_ = cur.Close()
 		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
 	}
-	m := &Meter{max: mx, cur: cur, stat: stat, Reclaim: debug.FreeOSMemory}
+	m := &Meter{max: mx, cur: cur, stat: stat, Reclaim: debug.FreeOSMemory, ReleaseReclaim: debug.FreeOSMemory}
 	if _, _, err := m.read(); err != nil {
 		m.Close()
 		return nil, err
@@ -239,4 +256,25 @@ func (c *Charge) Release() {
 	if n := c.n.Swap(0); n > 0 {
 		c.m.outstanding.Add(-n)
 	}
+}
+
+// ReclaimReleased runs ReleaseReclaim in the background, at most once per
+// reclaimInterval and one run at a time; a call that finds a run in progress
+// or a run less than reclaimInterval ago does nothing. It is triggered only
+// by a finished large request, never by a timer. Call it after the request
+// has dropped its references, or the GC still sees them live.
+func (m *Meter) ReclaimReleased() {
+	fn := m.ReleaseReclaim
+	if fn == nil || !m.releaseRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer m.releaseRunning.Store(false)
+		m.reclaimMu.Lock()
+		defer m.reclaimMu.Unlock()
+		if time.Since(m.lastReleaseReclaim) >= reclaimInterval {
+			fn()
+			m.lastReleaseReclaim = time.Now()
+		}
+	}()
 }
