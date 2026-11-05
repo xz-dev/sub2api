@@ -124,3 +124,41 @@ func TestSpoolEgressFailsClosed(t *testing.T) {
 	_, recorded := c.Get(OpsUpstreamErrorsKey)
 	require.False(t, recorded)
 }
+
+// TestCCEgressForwardsTicketAndSplices: the Chat Completions egress (the
+// Responses->Chat path) splices the blobs back, forwards the leased ticket
+// to a configured internal host only, and answers an unresolved marker with
+// the named 500 instead of a bare build error.
+func TestCCEgressForwardsTicketAndSplices(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const ticket = "0123456789abcdef0123456789abcdef"
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("A", 70000) + `"}}]}]}`)
+	sp, skel := spoolForTest(t, body)
+	cfg := &config.Config{}
+	cfg.Gateway.BodySpool.TicketForwardHosts = []string{"apisix-models:9080"}
+	for name, tc := range map[string]struct{ url, want string }{
+		"internal": {"http://apisix-models:9080/v1/chat/completions", ticket},
+		"other":    {"https://api.example.com/v1/chat/completions", ""},
+	} {
+		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}}}
+		svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+		c := ginWithSpool(sp, ticket)
+		c.Request.Header.Set(bodyspool.TicketHeader, "client-forged")
+		_, err := svc.sendCCUpstreamRequest(c.Request.Context(), c, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, tc.url, skel, false, "tok", "", "")
+		require.NoError(t, err, name)
+		require.Equal(t, tc.want, upstream.lastReq.Header.Get(bodyspool.TicketHeader), name)
+		require.Equal(t, body, upstream.lastBody, name)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(WithRequestBodySpool(context.Background(), sp, ""))
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	mangled := bytes.Replace(skel, []byte(`\u0000lrc`), []byte(`\\u0000lrc`), 1)
+	_, err := svc.sendCCUpstreamRequest(c.Request.Context(), c, &Account{ID: 1}, "http://apisix-models:9080/v1/chat/completions", mangled, false, "tok", "", "")
+	require.ErrorIs(t, err, bodyspool.ErrMarkerUnresolved)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Contains(t, rec.Body.String(), `"marker_unresolved"`)
+	require.Nil(t, upstream.lastReq)
+}
