@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
@@ -43,7 +44,8 @@ func deriveOpenAISessionHashes(sessionID string) (currentHash string, legacyHash
 	}
 
 	currentHash = fmt.Sprintf("%016x", xxhash.Sum64String(normalized))
-	sum := sha256.Sum256([]byte(normalized))
+	// Read-only view: a content seed can be as large as the body.
+	sum := sha256.Sum256(unsafe.Slice(unsafe.StringData(normalized), len(normalized)))
 	legacyHash = hex.EncodeToString(sum[:])
 	return currentHash, legacyHash
 }

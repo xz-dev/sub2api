@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -92,7 +91,10 @@ scanRoot:
 		return seen != allContentSessionSeedFields
 	})
 
+	// The prefix goes first so the (possibly body-sized) seed is not copied
+	// again at the end.
 	var b strings.Builder
+	_, _ = b.WriteString(contentSessionSeedPrefix)
 
 	if model := fields[modelField].String(); model != "" {
 		_, _ = b.WriteString("model=")
@@ -101,12 +103,12 @@ scanRoot:
 
 	if tools := fields[toolsField]; tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
 		_, _ = b.WriteString("|tools=")
-		_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(tools.Raw)))
+		_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(tools.Raw)))
 	}
 
 	if funcs := fields[functionsField]; funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
 		_, _ = b.WriteString("|functions=")
-		_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(funcs.Raw)))
+		_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(funcs.Raw)))
 	}
 
 	if instr := fields[instructionsField].String(); instr != "" {
@@ -126,7 +128,7 @@ scanRoot:
 				if systemPrefixOpen {
 					_, _ = b.WriteString("|system=")
 					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
 					}
 				}
 			case "user":
@@ -134,7 +136,7 @@ scanRoot:
 				if !firstUserCaptured {
 					_, _ = b.WriteString("|first_user=")
 					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
 					}
 					firstUserCaptured = true
 				}
@@ -154,13 +156,13 @@ scanRoot:
 				case "system", "developer":
 					_, _ = b.WriteString("|system=")
 					if c := item.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
 					}
 				case "user":
 					if !firstUserCaptured {
 						_, _ = b.WriteString("|first_user=")
 						if c := item.Get("content"); c.Exists() {
-							_, _ = b.WriteString(normalizeCompatSeedJSON(json.RawMessage(c.Raw)))
+							_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
 						}
 						firstUserCaptured = true
 					}
@@ -177,10 +179,10 @@ scanRoot:
 		}
 	}
 
-	if b.Len() == 0 {
+	if b.Len() == len(contentSessionSeedPrefix) {
 		return ""
 	}
-	return contentSessionSeedPrefix + b.String()
+	return b.String()
 }
 
 // deriveOpenAIAnchoredContentSessionSeed returns the legacy content-derived
@@ -327,7 +329,7 @@ func normalizeNonEmptyCompatSeedJSON(value gjson.Result) (string, bool) {
 	if !value.Exists() || value.Type == gjson.Null {
 		return "", false
 	}
-	normalized := normalizeCompatSeedJSON(json.RawMessage(value.Raw))
+	normalized := normalizeCompatSeedJSON(rawJSONView(value.Raw))
 	switch normalized {
 	case "", `""`, "[]", "{}", "null":
 		return "", false

@@ -82,7 +82,7 @@ func newOpenAIUpstreamBodyRequest(ctx context.Context, c *gin.Context, method, u
 	if err != nil {
 		return nil, err
 	}
-	if err := setOpenAIUpstreamBody(req, body); err != nil {
+	if err := setOpenAIUpstreamBody(req, body, false); err != nil {
 		if errors.Is(err, bodyspool.ErrMarkerUnresolved) && c != nil && !c.Writer.Written() {
 			MarkResponseCommitted(c)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
@@ -95,13 +95,18 @@ func newOpenAIUpstreamBodyRequest(ctx context.Context, c *gin.Context, method, u
 	return req, nil
 }
 
-// setOpenAIUpstreamBody sets req's body from the (skeleton) bytes.
-func setOpenAIUpstreamBody(req *http.Request, body []byte) error {
+// setOpenAIUpstreamBody sets req's body from the (skeleton) bytes. With
+// copyBody, GetBody replays a private copy (the legacy GPT-5.5 Lite rewrite);
+// otherwise it replays body itself, as http.NewRequest does.
+func setOpenAIUpstreamBody(req *http.Request, body []byte, copyBody bool) error {
+	saved := body
+	if copyBody {
+		saved = append([]byte(nil), body...)
+	}
 	sp, _ := requestBodySpoolFromContext(req.Context())
 	if sp == nil {
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
-		saved := append([]byte(nil), body...)
 		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(saved)), nil }
 		return nil
 	}
@@ -111,7 +116,6 @@ func setOpenAIUpstreamBody(req *http.Request, body []byte) error {
 	}
 	req.Body = spliceBody{r}
 	req.ContentLength = n
-	saved := append([]byte(nil), body...)
 	req.GetBody = func() (io.ReadCloser, error) {
 		r, _, err := sp.Reader(saved)
 		return spliceBody{r}, err

@@ -28,6 +28,10 @@ type Options struct {
 	// Observe is called with the raw byte total after each read; an error
 	// stops the ingest before the next read.
 	Observe func(rawBytes int64) error
+	// SizeHint, when positive, is the skeleton capacity allocated up front
+	// (capped at InlineLimit), so the skeleton never regrows. The caller must
+	// already have charged it.
+	SizeHint int64
 }
 
 // InlineLimitError: the inline bytes (skeleton) passed the limit.
@@ -104,6 +108,12 @@ func Ingest(r io.Reader, file *File, opt Options) (*Spool, []byte, error) {
 		return nil, nil, err
 	}
 	in := &ingest{opt: opt, sp: &Spool{file: file, nonce: nonce, tag: nonce.tag()}, collide: newMatcher([]byte(nonce.Hex()))}
+	if hint := opt.SizeHint; hint > 0 {
+		if opt.InlineLimit > 0 {
+			hint = min(hint, opt.InlineLimit)
+		}
+		in.skel = make([]byte, 0, hint)
+	}
 	if err := in.run(r); err != nil {
 		return nil, nil, err
 	}
