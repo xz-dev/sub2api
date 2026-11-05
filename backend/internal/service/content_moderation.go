@@ -521,7 +521,7 @@ type ContentModerationService struct {
 	emailService             *EmailService
 	httpClient               *http.Client
 	moderationProxyCache     atomic.Pointer[moderationProxyURLCacheEntry]
-	asyncQueue               chan contentModerationTask
+	asyncQueue               chan *contentModerationTask
 	workerCount              int
 	apiKeyCursor             atomic.Uint64
 	asyncActive              atomic.Int64
@@ -594,6 +594,9 @@ func NewContentModerationService(
 	authCacheInvalidator APIKeyAuthCacheInvalidator,
 	emailService *EmailService,
 ) *ContentModerationService {
+	// asyncQueue holds pointers: it is allocated here with the maximum
+	// capacity, and by-value tasks made it about 27 MB of live heap on every
+	// process, moderation on or off.
 	svc := &ContentModerationService{
 		settingRepo:          settingRepo,
 		repo:                 repo,
@@ -605,7 +608,7 @@ func NewContentModerationService(
 		emailService:         emailService,
 		httpClient:           servertiming.InstrumentClient(nil),
 		workerCount:          maxContentModerationWorkerCount,
-		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
+		asyncQueue:           make(chan *contentModerationTask, maxContentModerationQueueSize),
 		keyHealth:            make(map[string]*contentModerationKeyHealth),
 	}
 	if settingRepo != nil && repo != nil {
@@ -1216,7 +1219,7 @@ func (s *ContentModerationService) enqueueAsync(input ContentModerationCheckInpu
 		s.asyncDropped.Add(1)
 		return
 	}
-	task := contentModerationTask{
+	task := &contentModerationTask{
 		input:      input,
 		content:    content,
 		inputHash:  hashText,
@@ -1248,7 +1251,7 @@ func (s *ContentModerationService) enqueueRecord(input ContentModerationCheckInp
 		s.asyncDropped.Add(1)
 		return
 	}
-	task := contentModerationTask{
+	task := &contentModerationTask{
 		input:            input,
 		inputHash:        inputHash,
 		log:              log,
@@ -1334,7 +1337,10 @@ func (s *ContentModerationService) dequeueAsyncTask(ctx context.Context, idleWai
 	defer timer.Stop()
 	select {
 	case task, ok := <-s.asyncQueue:
-		return task, ok
+		if !ok || task == nil {
+			return zero, false
+		}
+		return *task, true
 	case <-ctx.Done():
 		return zero, false
 	case <-timer.C:
