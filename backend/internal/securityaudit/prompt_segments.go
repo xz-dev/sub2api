@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -245,11 +246,11 @@ func (s *promptSegments) latestTurn() (spans []segmentSpan, priority int) {
 }
 
 // view is the decoded text of the string literal lit: a view of the body, or
-// of the scratch buffer when lit has escapes (valid until the next view or
-// add). Never keep it.
+// of the scratch buffer when lit has escapes or invalid UTF-8 (valid until
+// the next view or add). Never keep it.
 func (s *promptSegments) view(lit jsonRaw) string {
 	inner := []byte(lit[1 : len(lit)-1])
-	if bytes.IndexByte(inner, '\\') >= 0 {
+	if bytes.IndexByte(inner, '\\') >= 0 || !utf8.Valid(inner) {
 		s.scratch = appendJSONUnquote(s.scratch[:0], lit)
 		inner = s.scratch
 	}
@@ -308,7 +309,7 @@ func (s *promptSegments) compareNames(a, b uint32) int {
 // nameView is the decoded name: a view of the body, or of *buf.
 func nameView(name jsonRaw, buf *[]byte) string {
 	inner := []byte(name[1 : len(name)-1])
-	if bytes.IndexByte(inner, '\\') >= 0 {
+	if bytes.IndexByte(inner, '\\') >= 0 || !utf8.Valid(inner) {
 		*buf = appendJSONUnquote((*buf)[:0], name)
 		inner = *buf
 	}

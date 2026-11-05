@@ -3,6 +3,7 @@ package securityaudit
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"unicode"
 	"unicode/utf16"
@@ -24,7 +25,8 @@ type jsonRaw []byte
 // validJSONDocument reports whether json.Unmarshal into any accepts b:
 // json.Valid, and every number fits a float64 (json.Unmarshal into any
 // rejects 1e400, json.Valid does not). Duplicate names are allowed (the last
-// one wins, as in a map) and invalid UTF-8 is rejected by both.
+// one wins, as in a map). Both accept invalid UTF-8 in a string;
+// appendJSONUnquote decodes it as json.Unmarshal does.
 func validJSONDocument(b []byte) bool {
 	if !json.Valid(b) {
 		return false
@@ -222,15 +224,19 @@ func jsonNameIs(name jsonRaw, key string) bool {
 
 // appendJSONUnquote appends the decoded text of the string literal lit
 // (validated) to dst, as json.Unmarshal decodes it: an unpaired surrogate
-// escape becomes U+FFFD.
+// escape and each invalid UTF-8 byte become U+FFFD.
 func appendJSONUnquote(dst []byte, lit []byte) []byte {
 	s := lit[1 : len(lit)-1]
+	// Grown once to the exact bound (escapes only shrink; an invalid byte
+	// becomes 3), not rune by rune: append's growth would allocate about 5 ×
+	// the decoded text.
+	dst = slices.Grow(dst, len(s)+2*InvalidUTF8Bytes(s))
 	for len(s) > 0 {
 		i := bytes.IndexByte(s, '\\')
 		if i < 0 {
-			return append(dst, s...)
+			return appendUTF8(dst, s)
 		}
-		dst, s = append(dst, s[:i]...), s[i:]
+		dst, s = appendUTF8(dst, s[:i]), s[i:]
 		c := s[1]
 		s = s[2:]
 		switch c {
@@ -262,6 +268,48 @@ func appendJSONUnquote(dst []byte, lit []byte) []byte {
 		default: // '"', '\\', '/'
 			dst = append(dst, c)
 		}
+	}
+	return dst
+}
+
+// InvalidUTF8Bytes is the number of bytes of b that are not part of a valid
+// UTF-8 sequence: the bytes json.Unmarshal (and the guard) decode to U+FFFD.
+// It allocates nothing.
+func InvalidUTF8Bytes(b []byte) int {
+	if utf8.Valid(b) {
+		return 0
+	}
+	n := 0
+	for len(b) > 0 {
+		if b[0] < utf8.RuneSelf {
+			b = b[1:]
+			continue
+		}
+		r, size := utf8.DecodeRune(b)
+		if r == utf8.RuneError && size == 1 {
+			n++
+		}
+		b = b[size:]
+	}
+	return n
+}
+
+// InvalidUTF8ChargeK bounds what the guard allocates per invalid byte
+// beyond its charge for a valid body: the byte becomes U+FFFD (2 more bytes)
+// in each of the three copies of a kept text (the decode buffer, the
+// segment arena and the scan text; blocking chunks are views of the scan
+// text). TestPromptSnapshotInvalidUTF8CostBounded measures at most 4.2.
+const InvalidUTF8ChargeK = 6
+
+// appendUTF8 appends s to dst with each invalid UTF-8 byte replaced by
+// U+FFFD (3 bytes), as json.Unmarshal decodes a string.
+func appendUTF8(dst, s []byte) []byte {
+	if utf8.Valid(s) {
+		return append(dst, s...)
+	}
+	for len(s) > 0 {
+		r, size := utf8.DecodeRune(s)
+		dst, s = utf8.AppendRune(dst, r), s[size:]
 	}
 	return dst
 }
