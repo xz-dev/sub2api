@@ -81,22 +81,35 @@ func largeResponsesTextBody(size int) []byte {
 	return append(b, suffix...)
 }
 
-// largeResponsesImagesBody builds 1 MiB data-URL images (the common shape of
-// real large Codex/Responses bodies), padded to exactly size bytes.
+// largeResponsesImagesBody builds data-URL images of up to 1 MiB (the common
+// shape of real large Codex/Responses bodies), exactly size bytes long; the
+// inline (non-media) part stays a few KiB at every size.
 func largeResponsesImagesBody(size int) []byte {
 	b := bytes.NewBufferString(`{"model":"gpt-5.1","stream":false,"input":[`)
-	img := bytes.Repeat([]byte("A"), 1<<20)
-	for i := 0; b.Len() < size-(2<<20); i++ {
+	const tail = `]}`
+	for i := 0; ; i++ {
+		head := `{"type":"message","role":"user","content":[{"type":"input_text","text":"look ` + strconv.Itoa(i) + `"},{"type":"input_image","image_url":"data:image/png;base64,`
 		if i > 0 {
-			b.WriteByte(',')
+			head = "," + head
 		}
-		b.WriteString(`{"type":"message","role":"user","content":[{"type":"input_text","text":"look ` + strconv.Itoa(i) + `"},{"type":"input_image","image_url":"data:image/png;base64,`)
-		b.Write(img)
-		b.WriteString(`"}]}`)
+		const end = `"}]}`
+		room := size - b.Len() - len(head) - len(end) - len(tail)
+		if room <= 0 {
+			// Too little room for another image: pad the last image instead.
+			out := b.Bytes()
+			pad := size - len(out) - len(tail)
+			cut := len(out) - len(end)
+			out = append(out[:cut:cut], append(bytes.Repeat([]byte("A"), pad), []byte(end+tail)...)...)
+			return out
+		}
+		b.WriteString(head)
+		b.Write(bytes.Repeat([]byte("A"), min(room, 1<<20)))
+		b.WriteString(end)
+		if room <= 1<<20 {
+			b.WriteString(tail)
+			return b.Bytes()
+		}
 	}
-	pad := size - b.Len() - len(`],"metadata":{"pad":""}}`)
-	b.WriteString(`],"metadata":{"pad":"` + string(bytes.Repeat([]byte("p"), pad)) + `"}}`)
-	return b.Bytes()
 }
 
 // spoolTestEnv enables gateway.body_spool for cfg: spool on a temp disk dir,
@@ -263,6 +276,7 @@ func TestOpenAIResponsesLargeBodyPeakHeap(t *testing.T) {
 	}
 	size := mib << 20
 	body := largeResponsesImagesBody(size)
+	require.Len(t, body, size)
 	for _, accountType := range []string{"oauth", "apikey"} {
 		t.Run(accountType, func(t *testing.T) {
 			upstream := &largeBodyDrainUpstream{}
