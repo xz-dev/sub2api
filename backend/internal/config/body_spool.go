@@ -58,9 +58,10 @@ const (
 	DefaultBodySpoolIdleBaseline int64 = 48 << 20
 	// Measured with the prompt guard on, (memory.peak - idle memory.current)
 	// / 16 MiB in a 320m Sub2API, after review a4a7d843 removed the guard's
-	// text copies: at most 11.94 (async, text-heavy corpus d10-utext-16),
-	// 11.31 (async, D10 text-16), 10.38 (blocking); rounded up with ~9 %
-	// margin. S_h = (320 - 32 - 45) / 13 = 18.7 MiB >= S.
+	// text copies: at most 12.19 (async, text-heavy corpus d10-utext-16, 20
+	// settled runs), 11.31 (async, D10 text-16, 20 runs), 10.38 (blocking,
+	// 10 runs); rounded up with ~7 % margin. S_h = (320 - 32 - 45) / 13 =
+	// 18.7 MiB >= S.
 	DefaultBodySpoolKSkel          float64 = 13
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
