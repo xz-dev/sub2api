@@ -130,7 +130,26 @@ func (spliceBody) Close() error { return nil }
 
 // errSpoolEgressUnspliced: a request of a spooled body was about to be sent
 // with a body that did not go through the splicer, which would leak markers.
-var errSpoolEgressUnspliced = errors.New("sub2api: spooled request body reached an egress path without the splicer; nothing was sent")
+// Only bodies with blobs carry a spool; only the OpenAI Responses (forward,
+// passthrough) and Chat Completions builders splice.
+var errSpoolEgressUnspliced = errors.New("sub2api: this upstream protocol cannot carry a body with spooled media strings (64 KiB or more); only OpenAI Responses and Chat Completions upstreams can; nothing was sent")
+
+// CodeSpooledBodyUnsupported names the request-scoped refusal of a spooled
+// body on a request builder that does not splice.
+const CodeSpooledBodyUnsupported = "spooled_body_unsupported"
+
+// writeSpoolEgressRefusal answers 422 spooled_body_unsupported (if nothing
+// was written yet) and returns a plain error: the request stops on this
+// attempt, with no failover and no account or pool record.
+func writeSpoolEgressRefusal(c *gin.Context, err error) error {
+	if c != nil && !c.Writer.Written() {
+		MarkResponseCommitted(c)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "code": CodeSpooledBodyUnsupported, "hop": "sub2api", "message": err.Error(),
+		}})
+	}
+	return err
+}
 
 // checkSpoolEgress fails closed when a spooled request would send a body
 // that is not the splice stream.
