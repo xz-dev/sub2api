@@ -137,3 +137,12 @@ func unavailablePromptDecision(code string) *PromptDecision {
 	}
 	return &PromptDecision{Kind: kind, ErrorCode: code, AllowNextStage: false}
 }
+
+// PromptMode is the prompt guard's effective mode (off without a guard).
+// Callers use it to skip preparing a body that no engine will read.
+func (c *Coordinator) PromptMode() Mode {
+	if c == nil || c.prompt == nil {
+		return ModeOff
+	}
+	return c.prompt.EffectiveMode()
+}

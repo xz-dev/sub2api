@@ -77,7 +77,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 	}
 	body, refusal := auditBodyForSpool(c, func() bool {
 		return legacy.ModeratesRequest(c.Request.Context(), buildContentModerationInput(c, apiKey, subject, protocol, model, body))
-	}, body)
+	}, func() bool { return coordinator.PromptMode() != securityaudit.ModeOff }, body)
 	if refusal != nil {
 		c.Set(bodySpoolAuditRefusalKey, refusal)
 		return &securityaudit.Decision{Kind: securityaudit.DecisionBlock, HTTPStatus: refusal.status, ErrorCode: refusal.code, ClientMessage: refusal.message}
