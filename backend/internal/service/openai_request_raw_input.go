@@ -26,6 +26,33 @@ func replaceOpenAIRawInput(body []byte, input gjson.Result, items []string) []by
 }
 
 // The standard decoder keeps the last duplicate key; GJSON selects the first.
+// hasDuplicateJSONObjectKeysIn is hasDuplicateJSONObjectKeys with the keys
+// kept in *scratch, reused across calls: no map for an object of up to 32
+// keys (review rr3: a map per item of a body of many small items).
+func hasDuplicateJSONObjectKeysIn(object gjson.Result, scratch *[]string) bool {
+	keys := (*scratch)[:0]
+	duplicate, large := false, false
+	object.ForEach(func(key, _ gjson.Result) bool {
+		if len(keys) == 32 {
+			large = true
+			return false
+		}
+		for _, seen := range keys {
+			if seen == key.Str {
+				duplicate = true
+				return false
+			}
+		}
+		keys = append(keys, key.Str)
+		return true
+	})
+	*scratch = keys[:0]
+	if large {
+		return hasDuplicateJSONObjectKeys(object)
+	}
+	return duplicate
+}
+
 func hasDuplicateJSONObjectKeys(object gjson.Result) bool {
 	seen := make(map[string]struct{})
 	duplicate := false

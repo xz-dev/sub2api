@@ -128,7 +128,8 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 	// tools and into an input.additional_tools carrier. API-key requests are
 	// intentionally not rewritten by normalizeOpenAIResponsesLiteTools, so the
 	// declaration can arrive here only in this form.
-	input := gjson.GetBytes(body, "input")
+	// A read-only view: GetBytes would copy all of input (review rr3).
+	input := parseRawJSONView(body).Get("input")
 	if !input.IsArray() {
 		return false
 	}

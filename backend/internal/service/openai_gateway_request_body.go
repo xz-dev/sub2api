@@ -740,6 +740,11 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 	if !root.IsObject() || !gjson.ValidBytes(body) || !utf8.Valid(body) || hasDuplicateJSONObjectKeys(root) {
 		return normalizeOpenAIAPIKeyStoreFalseReasoningReplayDecoded(body, knownStoreFalse)
 	}
+	if !storeFalseReplayMayChange(input) {
+		// Nothing below would change or fall back: keep no item list (review
+		// rr3: about 5 x a body of many small items, per passthrough request).
+		return body, false, nil
+	}
 
 	// Only reasoning metadata needs decoding. Keep large image/tool results as
 	// slices of the original JSON and copy them once into the final request.
@@ -804,6 +809,33 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 		return body, false, nil
 	}
 	return replaceOpenAIRawInput(body, input, items), true, nil
+}
+
+// storeFalseReplayMayChange reports whether the item walk of
+// normalizeOpenAIAPIKeyStoreFalseReasoningReplay would change an item or
+// fall back to the decoder for input: the same tests, keeping nothing.
+func storeFalseReplayMayChange(input gjson.Result) bool {
+	may := false
+	keys := make([]string, 0, 32)
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			return true
+		}
+		if hasDuplicateJSONObjectKeysIn(item, &keys) {
+			may = true
+			return false
+		}
+		typ := strings.TrimSpace(item.Get("type").String())
+		id := strings.TrimSpace(item.Get("id").String())
+		switch {
+		case typ == "reasoning", typ == "item_reference" && strings.HasPrefix(id, "rs_"):
+			may = true // dropped, or its id or summary rewritten
+		case shouldStripOpenAIResponsesNonPairCallID(typ) && item.Get("call_id").Exists():
+			may = true
+		}
+		return !may
+	})
+	return may
 }
 
 // Preserve the decoder's handling of unusual or duplicate-key input objects.

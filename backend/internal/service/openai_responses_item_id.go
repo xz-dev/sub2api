@@ -74,8 +74,7 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 		stripCallID bool
 	}
 
-	items := make([]inputItem, 0)
-	input.ForEach(func(_, item gjson.Result) bool {
+	parse := func(item gjson.Result) inputItem {
 		parsed := inputItem{raw: item.Raw}
 		if item.IsObject() {
 			itemType := item.Get("type")
@@ -86,19 +85,25 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 				parsed.stripID = shouldStripOpenAIResponsesInputItemID(trimmedItemType, id.String())
 			}
 		}
-		items = append(items, parsed)
-		return true
-	})
-	hasSanitization := false
-	for _, item := range items {
-		if item.stripID || item.stripCallID {
-			hasSanitization = true
-			break
-		}
+		return parsed
 	}
+	// Find out first, keeping nothing, whether any item changes (review
+	// rr3: the item list of a body of many small items cost about 7 x the
+	// body on every passthrough request that changed nothing).
+	hasSanitization := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		parsed := parse(item)
+		hasSanitization = parsed.stripID || parsed.stripCallID
+		return !hasSanitization
+	})
 	if !hasSanitization {
 		return body, false, nil
 	}
+	items := make([]inputItem, 0)
+	input.ForEach(func(_, item gjson.Result) bool {
+		items = append(items, parse(item))
+		return true
+	})
 
 	rebuiltItems := make([]string, 0, len(items))
 	for index, item := range items {
