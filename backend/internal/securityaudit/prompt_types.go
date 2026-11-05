@@ -81,6 +81,10 @@ type Request struct {
 	Model      string
 	Body       []byte
 	Stage      string
+	// RetainMemory, when set, keeps n bytes of the request's memory charge
+	// until the returned release is called, so memory handed to a goroutine
+	// that outlives the request stays charged (the async audit's snapshot).
+	RetainMemory func(n int64) (release func())
 }
 
 func (r Request) Clone() Request {

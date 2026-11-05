@@ -130,16 +130,25 @@ func (s *PromptService) Enqueue(_ context.Context, req Request) error {
 	// The snapshot is built here, on the request's goroutine, while the
 	// request still holds its memory charge. Only the snapshot goes to the
 	// background goroutine: no copy of the body, and nothing decoded from it
-	// but the bounded snapshot, outlives the handler.
+	// but the snapshot, outlives the handler. The snapshot holds all the text
+	// the guard reads, and the commit may take up to 2 s after the request
+	// has ended, so job.retained bytes of the request's charge move to the
+	// goroutine and are released only when it has dropped the job (review
+	// a4a7d843 major).
 	job, err := s.enqueuer.prepare(req)
 	if job == nil {
 		<-s.enqueueSlots
 		return err
 	}
+	release := func() {}
+	if req.RetainMemory != nil {
+		release = req.RetainMemory(job.retained)
+	}
 	s.enqueueWG.Add(1)
 	go func() {
 		defer s.enqueueWG.Done()
 		defer func() { <-s.enqueueSlots }()
+		defer func() { job = nil; release() }()
 		ctx, cancel := context.WithTimeout(background, 2*time.Second)
 		defer cancel()
 		_ = s.enqueuer.commit(ctx, job)

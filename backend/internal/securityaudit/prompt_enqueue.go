@@ -21,12 +21,20 @@ func NewEnqueuer(config ConfigStore, repo JobRepository, payload PayloadStore, m
 }
 
 // preparedJob is what an asynchronous audit keeps after the request: the
-// snapshot (its scan text is bounded by the snapshot builder), never the body.
+// snapshot, never the body. The snapshot is not small: its scan text is all
+// the text the guard reads, up to the body's size. retained bounds the bytes
+// it keeps alive; PromptService.Enqueue keeps that much of the request's
+// memory charge until the commit goroutine drops the job.
 type preparedJob struct {
 	cfg        ActiveConfig
 	snapshot   PromptSnapshot
 	baseFields map[string]any
+	retained   int64
 }
+
+// preparedJobOverhead bounds the job's fixed part: the snapshot's metadata
+// strings and the log fields.
+const preparedJobOverhead = 16 << 10
 
 func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 	job, err := e.prepare(req)
@@ -70,7 +78,15 @@ func (e *Enqueuer) prepare(req Request) (*preparedJob, error) {
 		LogWarn(EventEnqueueDropped, mergeLogFields(baseFields, map[string]any{"status": "dropped", "error_code": "snapshot_invalid"}))
 		return nil, nil
 	}
-	return &preparedJob{cfg: cfg, snapshot: snapshot, baseFields: baseFields}, nil
+	// A scan text of one segment is that segment, a substring of the decoded
+	// JSON string, which is at most the body; several segments are joined
+	// into a scan text of exactly its length.
+	text := int64(len(snapshot.ScanText))
+	if snapshot.MessageCount <= 1 {
+		text = max(text, int64(len(req.Body)))
+	}
+	retained := text + int64(len(snapshot.FullPrompt)+len(snapshot.RedactedPreview)) + preparedJobOverhead
+	return &preparedJob{cfg: cfg, snapshot: snapshot, baseFields: baseFields, retained: retained}, nil
 }
 
 // commit stores a prepared job: staging row, payload, queue publish.

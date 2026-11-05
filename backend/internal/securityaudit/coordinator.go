@@ -37,9 +37,10 @@ func (c *Coordinator) Check(ctx context.Context, req Request) Decision {
 	switch mode {
 	case ModeAsync:
 		// Enqueue is deliberately best-effort. The implementation builds the
-		// snapshot on this goroutine and hands only it to a bounded background
-		// context (PromptService.Enqueue), so the body is never copied: the
-		// copies made here and there outlived the handler's memory charge.
+		// snapshot on this goroutine and hands only it to a background commit
+		// (PromptService.Enqueue), so the body is never copied; the snapshot
+		// keeps its share of the request's memory charge (req.RetainMemory)
+		// until the commit drops it.
 		_ = c.prompt.Enqueue(ctx, req)
 		legacy, _ := c.checkLegacy(ctx, req)
 		return prioritize(legacy, nil)

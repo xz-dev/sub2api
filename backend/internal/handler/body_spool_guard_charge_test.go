@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -51,4 +52,45 @@ func TestBodySpoolGuardDecodeChargedOnFallbackPaths(t *testing.T) {
 	coveredOn, coveredOff := held("/v1/responses", on), held("/v1/responses", off)
 	require.Len(t, on.bodies, 1, "the guard read the covered body")
 	require.Equal(t, coveredOff, coveredOn, "covered: the k_skel envelope already holds the decode")
+}
+
+// asyncHoldEngine is an async prompt engine that keeps n bytes of the
+// request's charge, like PromptService.Enqueue, until done closes.
+type asyncHoldEngine struct {
+	n    int64
+	done chan struct{}
+	held chan struct{}
+}
+
+func (e *asyncHoldEngine) EffectiveMode() securityaudit.Mode { return securityaudit.ModeAsync }
+func (e *asyncHoldEngine) Enqueue(_ context.Context, req securityaudit.Request) error {
+	release := req.RetainMemory(e.n)
+	go func() { <-e.done; release(); close(e.held) }()
+	return nil
+}
+func (e *asyncHoldEngine) Evaluate(context.Context, securityaudit.Request) (*securityaudit.PromptDecision, error) {
+	return nil, nil
+}
+
+// TestBodySpoolAsyncAuditHoldOutlivesRequest (review a4a7d843 major): the
+// bytes the async audit keeps stay charged after the request's charge is
+// released at chain return, until the audit's goroutine drops them.
+func TestBodySpoolAsyncAuditHoldOutlivesRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := largeResponsesTextBody(256 << 10)
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
+		engine := &asyncHoldEngine{n: 100 << 10, done: make(chan struct{}), held: make(chan struct{})}
+		h.securityAuditCoordinator = securityaudit.NewCoordinator(nil, engine)
+		enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
+		meter := bodySpoolRuntimeFor(h.cfg).meter
+		c, rec := newLargeBodyTestContext(path, body, "")
+		h.Responses(c)
+		releaseRequestBodySpool(c) // what BodySpoolIngest does at chain return
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.EqualValues(t, roundUpGranule(engine.n), meter.Outstanding(), "%s: the audit's bytes outlive the request", path)
+		close(engine.done)
+		<-engine.held
+		require.Zero(t, meter.Outstanding(), path)
+	}
 }
