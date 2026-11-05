@@ -418,14 +418,20 @@ func ingestFallbackBody(c *gin.Context, rt *bodySpoolRuntime, st *bodySpoolState
 	src := c.Request.Body
 	decoded := ""
 	if encoding != "" {
-		dec, err := pkghttputil.NewRequestBodyDecoder(encoding, http.MaxBytesReader(c.Writer, c.Request.Body, rt.cap))
+		// The decoder's state is charged before it is allocated (review rr3:
+		// gzip's ~40 KB were allocated first).
+		var chargeErr error
+		dec, err := pkghttputil.NewChargedRequestBodyDecoder(encoding, http.MaxBytesReader(c.Writer, c.Request.Body, rt.cap), func(n int64) error {
+			chargeErr = st.charge.Add(n)
+			return chargeErr
+		})
+		if chargeErr != nil {
+			return refusalFor(chargeErr, 0)
+		}
 		if err != nil {
 			return decodeRefusal(encoding, err)
 		}
 		defer func() { _ = dec.Close() }()
-		if err := st.charge.Add(dec.StateBytes); err != nil {
-			return refusalFor(err, 0)
-		}
 		c.Request.Header.Del("Content-Encoding")
 		c.Request.Header.Del("Content-Length")
 		c.Request.ContentLength = -1
