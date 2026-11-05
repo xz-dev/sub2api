@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -59,7 +60,8 @@ func chunked(c *gin.Context) {
 }
 
 // TestOpenAIResponsesSingleTextBody16MiBAt320m: one 16 MiB text body (inline
-// = S) at k_skel 15 on 320m with a 45 MiB idle is charged 240 MiB once and
+// = S) at the default k_skel (14) on 320m with a 45 MiB idle is charged
+// 224 MiB once and
 // passes; the charge is held while the request runs and dropped after.
 func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -84,7 +86,7 @@ func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 			case <-done:
 				t.Fatalf("finished before upstream: %d %s", rec.Code, rec.Body.String())
 			}
-			require.EqualValues(t, 240<<20, meter.Outstanding(), "15 x 16 MiB, held while the bytes are live")
+			require.EqualValues(t, int64(config.DefaultBodySpoolKSkel*16)<<20, meter.Outstanding(), "k_skel x 16 MiB, held while the bytes are live")
 			close(upstream.block)
 			<-done
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -94,7 +96,7 @@ func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 }
 
 // TestOpenAIResponsesConcurrentTextBodies16MiB: while one 16 MiB text body
-// holds its 240 MiB charge, others get 503 insufficient_memory (none is
+// holds its 224 MiB charge, others get 503 insufficient_memory (none is
 // admitted past memory.max - 32 MiB); after it returns, the next one passes.
 func TestOpenAIResponsesConcurrentTextBodies16MiB(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -161,6 +163,6 @@ func TestBodySpoolChargeHeldUntilChainReturns(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.EqualValues(t, 15*4<<20, afterHandler, "still charged after the handler returned")
+	require.EqualValues(t, int64(config.DefaultBodySpoolKSkel*4)<<20, afterHandler, "still charged after the handler returned")
 	require.Zero(t, meter.Outstanding())
 }

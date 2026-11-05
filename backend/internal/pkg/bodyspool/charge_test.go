@@ -177,3 +177,32 @@ func TestChargeCountsOwnBytesOnce(t *testing.T) {
 		require.Zero(t, m.Outstanding())
 	}
 }
+
+// TestChargeReclaimsOnceBeforeRefusing: a first charge that does not fit
+// returns freed heap to the OS once and re-reads memory.current; a charge
+// that already holds bytes never re-snapshots (its bytes would count twice),
+// and reclaiming is rate-limited across refusals.
+func TestChargeReclaimsOnceBeforeRefusing(t *testing.T) {
+	dir, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(95*mib))
+	var reclaims int
+	m.Reclaim = func() {
+		reclaims++
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(strconv.Itoa(50*mib)), 0o600))
+	}
+	c := newCharge(t, m)
+	require.NoError(t, c.Add(224*mib), "320 − 50 − 32 = 238 ≥ 224 after reclaiming (193 before)")
+	require.Equal(t, 1, reclaims)
+
+	d := newCharge(t, m) // 238 − 224 = 14 free
+	require.NoError(t, d.Add(10*mib))
+	var ime *InsufficientMemoryError
+	require.ErrorAs(t, d.Add(10*mib), &ime, "d holds bytes: no re-snapshot")
+	require.Equal(t, 1, reclaims)
+
+	e := newCharge(t, m)
+	require.ErrorAs(t, e.Add(10*mib), &ime) // 4 free; reclaim is rate-limited
+	require.Equal(t, 1, reclaims)
+	c.Release()
+	d.Release()
+	require.Zero(t, m.Outstanding())
+}

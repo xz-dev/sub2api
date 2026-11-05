@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -31,6 +33,9 @@ type ResponsesToChatOptions struct {
 	// longer provide. Return "" on a miss. A nil lookup keeps the original
 	// behavior.
 	ReasoningContentByID func(itemID string) string
+	// EffectiveTools, when non-nil, is EffectiveResponsesTools(req) already
+	// computed by the caller; it is used instead of decoding the input again.
+	EffectiveTools *[]ResponsesTool
 }
 
 // ResponsesToChatCompletionsRequest converts a Responses API request into a
@@ -65,8 +70,10 @@ func ResponsesToChatCompletionsRequestWithOptions(req *ResponsesRequest, opts *R
 	if req.Reasoning != nil {
 		out.ReasoningEffort = req.Reasoning.Effort
 	}
-	effectiveTools, err := EffectiveResponsesTools(req)
-	if err != nil {
+	var effectiveTools []ResponsesTool
+	if opts != nil && opts.EffectiveTools != nil {
+		effectiveTools = *opts.EffectiveTools
+	} else if effectiveTools, err = EffectiveResponsesTools(req); err != nil {
 		return nil, err
 	}
 	if len(effectiveTools) > 0 {
@@ -115,9 +122,11 @@ func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
 		return tools, nil
 	}
 
-	var items []json.RawMessage
-	if err := json.Unmarshal(inputRaw, &items); err != nil {
-		return nil, fmt.Errorf("parse responses input for additional tools: %w", err)
+	items, ok := rawArrayItems(inputRaw)
+	if !ok {
+		if err := json.Unmarshal(inputRaw, &items); err != nil {
+			return nil, fmt.Errorf("parse responses input for additional tools: %w", err)
+		}
 	}
 	for _, raw := range items {
 		raw = bytesTrimSpace(raw)
@@ -330,9 +339,11 @@ func responsesInputToChatMessagesWithOptions(instructions string, inputRaw json.
 		return messages, nil
 	}
 
-	var rawItems []json.RawMessage
-	if err := json.Unmarshal(inputRaw, &rawItems); err != nil {
-		return nil, fmt.Errorf("parse responses input: %w", err)
+	rawItems, ok := rawArrayItems(inputRaw)
+	if !ok {
+		if err := json.Unmarshal(inputRaw, &rawItems); err != nil {
+			return nil, fmt.Errorf("parse responses input: %w", err)
+		}
 	}
 
 	built, mediaByCallID, err := buildChatMessagesFromItems(messages, rawItems, opts)
@@ -2268,8 +2279,37 @@ func rawNestedString(raw json.RawMessage, key string) string {
 	return rawString(obj[key])
 }
 
+// rawArrayItems splits a JSON array into its elements without copying them:
+// each item aliases raw (capacity capped), exactly the bytes json.Unmarshal
+// would give a []json.RawMessage. ok is false for anything else; callers then
+// fall back to json.Unmarshal for the legacy result and error.
+func rawArrayItems(raw []byte) ([]json.RawMessage, bool) {
+	dec := jsontext.NewDecoder(bytes.NewReader(raw), jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true))
+	if tok, err := dec.ReadToken(); err != nil || tok.Kind() != '[' {
+		return nil, false
+	}
+	items := make([]json.RawMessage, 0)
+	for dec.PeekKind() != ']' {
+		v, err := dec.ReadValue()
+		if err != nil {
+			return nil, false
+		}
+		end := int(dec.InputOffset())
+		items = append(items, raw[end-len(v):end:end])
+	}
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, false
+	}
+	if _, err := dec.ReadToken(); err != io.EOF {
+		return nil, false
+	}
+	return items, true
+}
+
+// bytesTrimSpace returns raw without surrounding white space. The result
+// aliases raw (callers only read it): a body-sized input is not copied.
 func bytesTrimSpace(raw json.RawMessage) json.RawMessage {
-	return json.RawMessage(strings.TrimSpace(string(raw)))
+	return bytes.TrimSpace(raw)
 }
 
 func nonEmpty(value, fallback string) string {

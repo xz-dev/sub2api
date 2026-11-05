@@ -1706,10 +1706,12 @@ func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
 }
 
 func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool, allowHistoricalContext bool) ([]byte, bool) {
-	// Every candidate is an input item of type function_call_output. Without
-	// one nothing changes, so skip the two whole-body decodes (gjson matches
-	// escaped keys and values; duplicate members are refused below anyway).
-	if !gjson.GetBytes(body, `input.#(type=="function_call_output")`).Exists() {
+	// Every candidate (delegation or automation) is an input item with
+	// namespace codex_app or codex_tui. Without one nothing changes, so skip
+	// the two whole-body decodes (gjson matches escaped keys and values;
+	// bodies with duplicate members are refused below anyway).
+	if !gjson.GetBytes(body, `input.#(namespace=="codex_app")`).Exists() &&
+		!gjson.GetBytes(body, `input.#(namespace=="codex_tui")`).Exists() {
 		return body, false
 	}
 	if !hasUniqueJSONMembers(body) {
