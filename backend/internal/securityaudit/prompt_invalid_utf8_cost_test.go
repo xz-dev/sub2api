@@ -3,7 +3,6 @@
 package securityaudit
 
 import (
-	"bytes"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -12,24 +11,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
-
-// rawResponsesBody is a Responses body of message items whose texts are
-// written as they are, invalid UTF-8 included (json.Marshal would replace
-// it). Texts must not need escapes.
-func rawResponsesBody(parts ...[2]string) []byte {
-	var b bytes.Buffer
-	b.WriteString(`{"model":"m","input":[`)
-	for i, p := range parts {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(`{"type":"message","role":"` + p[0] + `","content":[{"type":"input_text","text":"`)
-		b.WriteString(p[1])
-		b.WriteString(`"}]}`)
-	}
-	b.WriteString(`]}`)
-	return b.Bytes()
-}
 
 // invalidUTF8Shapes are guard bodies with invalid UTF-8 text (review rr3
 // blocker 1): one message, two, many small ones, and text with one invalid
