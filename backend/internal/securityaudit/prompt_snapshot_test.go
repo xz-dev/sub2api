@@ -74,11 +74,11 @@ func TestBuildFullPromptStripsNULAndTruncates(t *testing.T) {
 
 func TestFullPromptFromScanTextRestoresMultiSegmentLayout(t *testing.T) {
 	segments := []string{"latest user", "system policy", "earlier user"}
-	scanText := buildPrioritizedScanText(segments, 1)
+	scanText := buildPrioritizedScanText(promptPieces{texts: segments, joiner: "\n\n"}, 1)
 	require.Contains(t, scanText, promptAuditPrioritySeparator)
 	require.Equal(t, strings.Join(segments, "\n\n"), FullPromptFromScanText(scanText))
 
-	singleScan := buildPrioritizedScanText([]string{"only"}, 1)
+	singleScan := buildPrioritizedScanText(promptPieces{texts: []string{"only"}, joiner: "\n\n"}, 1)
 	require.NotContains(t, singleScan, promptAuditPrioritySeparator)
 	require.Equal(t, "only", FullPromptFromScanText(singleScan))
 }
@@ -338,14 +338,17 @@ func TestBlockingPromptSnapshotLimitsInputToLatestUserAndPreviousOutput(t *testi
 }
 
 func TestContentTextsIncludesSupportedTextTypes(t *testing.T) {
-	value := []any{
-		map[string]any{"type": "text", "text": "plain text"},
-		map[string]any{"type": "input_text", "text": "input text"},
-		map[string]any{"type": "output_text", "text": "output text"},
-		map[string]any{"type": "image_url", "text": "ignored text"},
+	value := []byte(`[{"type":"text","text":"plain text"},{"type":"input_text","text":"input text"},` +
+		`{"type":"output_text","text":"output text"},{"type":"image_url","text":"ignored text"}]`)
+	s := &promptSegments{}
+	contentSegments(s, value, segUser)
+	s.startFill()
+	contentSegments(s, value, segUser)
+	var texts []string
+	for i := 0; i < s.len(); i++ {
+		texts = append(texts, s.text(i))
 	}
-
-	require.Equal(t, []string{"plain text", "input text", "output text"}, contentTexts(value))
+	require.Equal(t, []string{"plain text", "input text", "output text"}, texts)
 }
 
 func TestResponsesOutputTextIncludedInFullAndLatestTurnSnapshots(t *testing.T) {
