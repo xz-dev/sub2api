@@ -31,6 +31,10 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	body []byte,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	// A protocol converter: the converted request's charge first (review rr3).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")

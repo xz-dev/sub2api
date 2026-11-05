@@ -13,11 +13,15 @@ import (
 // normalizeOpenAIResponsesLegacyIngress accepts the Chat Completions-shaped
 // payloads that a few Responses clients still emit. Native Responses input is
 // always authoritative because this path has no separate full-replay attempt.
-func normalizeOpenAIResponsesLegacyIngress(body []byte) ([]byte, bool, error) {
-	return normalizeOpenAIResponsesLegacyIngressWithConfig(nil, body)
+//
+// Rewriting a legacy body decodes all of it, as a protocol converter does:
+// chargeConversion (ChargeRequestConversion for the request, never nil) is
+// called first.
+func normalizeOpenAIResponsesLegacyIngress(body []byte, chargeConversion func() error) ([]byte, bool, error) {
+	return normalizeOpenAIResponsesLegacyIngressWithConfig(nil, body, chargeConversion)
 }
 
-func normalizeOpenAIResponsesLegacyIngressWithConfig(cfg *config.Config, body []byte) ([]byte, bool, error) {
+func normalizeOpenAIResponsesLegacyIngressWithConfig(cfg *config.Config, body []byte, chargeConversion func() error) ([]byte, bool, error) {
 	if len(body) == 0 {
 		return body, false, nil
 	}
@@ -38,6 +42,9 @@ func normalizeOpenAIResponsesLegacyIngressWithConfig(cfg *config.Config, body []
 		}
 	}
 
+	if err := chargeConversion(); err != nil {
+		return body, false, err
+	}
 	var request map[string]any
 	if err := decodeOpenAIJSONUseNumber(body, &request); err != nil {
 		return body, false, fmt.Errorf("normalize legacy Responses ingress: %w", err)
