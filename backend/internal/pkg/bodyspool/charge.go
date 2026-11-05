@@ -14,6 +14,13 @@ import (
 // Per-hop memory charge (design D4): an atomic byte counter of what in-flight
 // requests may still allocate, checked against the hop's own cgroup before
 // each step. No count cap, no lock beyond the counter, no timer, no queue.
+//
+// Each charge checks against the memory.current it read when it started,
+// before any of its own bytes existed. A fresh read would count the
+// request's already-charged bytes twice (once in memory.current, once in its
+// own charge) and refuse a 16 MiB text body at about 11 MiB on 320m. Other
+// requests' live bytes are in the snapshot and in their charges, so that
+// double count stays and errs toward refusing.
 const ChargeMargin int64 = 32 << 20
 
 // CodeInsufficientMemory is the 503 refusal code.
@@ -101,28 +108,32 @@ func (m *Meter) Outstanding() int64 { return m.outstanding.Load() }
 
 // Charge is one request's share of the meter.
 type Charge struct {
-	m *Meter
-	n atomic.Int64
+	m           *Meter
+	limit, base int64 // memory.max and memory.current at NewCharge
+	n           atomic.Int64
 }
 
-// NewCharge starts an empty charge.
-func (m *Meter) NewCharge() *Charge { return &Charge{m: m} }
+// NewCharge starts an empty charge. Call it before the request's body is
+// read: it snapshots memory.current while none of the request's bytes exist.
+func (m *Meter) NewCharge() (*Charge, error) {
+	limit, current, err := m.read()
+	if err != nil {
+		return nil, err
+	}
+	return &Charge{m: m, limit: limit, base: current}, nil
+}
 
 // Add takes step bytes after checking
-// memory.max − memory.current − outstanding ≥ step + 32 MiB. memory.current
-// already includes bytes in use, so the double count errs toward refusing.
-// The check and the add are one CAS on the counter.
+// memory.max − base − outstanding ≥ step + 32 MiB, where base is the
+// snapshot from NewCharge and outstanding includes this charge, so the
+// request's own bytes count once. The check and the add are one CAS.
 func (c *Charge) Add(step int64) error {
 	if step <= 0 {
 		return nil
 	}
-	limit, current, err := c.m.read()
-	if err != nil {
-		return err
-	}
 	for {
 		o := c.m.outstanding.Load()
-		free := limit - current - o - ChargeMargin
+		free := c.limit - c.base - o - ChargeMargin
 		if free < step {
 			return &InsufficientMemoryError{Need: step, Free: max(0, free)}
 		}
