@@ -8,24 +8,30 @@ import (
 )
 
 // promptPieces is a text made of pieces with joiner between them, read in
-// place: the segments in spans, in order, or texts when segs is nil. The
+// place: the segments in spans, in order, or texts when segs is nil (each
+// cut at every splitOn, when set, without a copy). The
 // snapshot computes the metadata text's hash, rune count, preview head and
 // stored prompt from it without ever building the joined text (review
 // a4a7d843 blocker 2: the joined copy, a []rune copy of it and regex passes
 // over it made the guard's cost a multiple of the body).
 type promptPieces struct {
-	segs   *promptSegments
-	spans  []segmentSpan
-	texts  []string
-	joiner string
+	segs    *promptSegments
+	spans   []segmentSpan
+	texts   []string
+	splitOn string
+	joiner  string
 }
 
 // count is the number of pieces.
 func (p promptPieces) count() int {
-	if p.segs == nil {
-		return len(p.texts)
-	}
 	n := 0
+	if p.segs == nil {
+		p.eachPiece(func(string) bool {
+			n++
+			return true
+		})
+		return n
+	}
 	for _, span := range p.spans {
 		n += span.to - span.from
 	}
@@ -46,6 +52,16 @@ func (p promptPieces) first() string {
 func (p promptPieces) eachPiece(f func(string) bool) {
 	if p.segs == nil {
 		for _, text := range p.texts {
+			for p.splitOn != "" {
+				piece, rest, found := strings.Cut(text, p.splitOn)
+				if !found {
+					break
+				}
+				if !f(piece) {
+					return
+				}
+				text = rest
+			}
 			if !f(text) {
 				return
 			}

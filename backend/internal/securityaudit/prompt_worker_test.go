@@ -219,6 +219,14 @@ func (s *fakePayloadStore) Get(_ context.Context, jobID int64) (string, error) {
 	}
 	return value, nil
 }
+func (s *fakePayloadStore) Len(_ context.Context, jobID int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.getErr != nil {
+		return 0, s.getErr
+	}
+	return int64(len(s.values[jobID])), nil
+}
 func (s *fakePayloadStore) Delete(_ context.Context, jobID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

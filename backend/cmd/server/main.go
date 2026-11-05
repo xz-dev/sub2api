@@ -18,6 +18,7 @@ import (
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
@@ -159,6 +160,15 @@ func runMainServer() {
 		}
 	}
 	if app.PromptAudit != nil {
+		if cfg.Gateway.BodySpool.Enabled {
+			// The async audit worker charges the same memory budget as the
+			// requests before it reads a payload back.
+			if meter, err := bodyspool.SharedMeter(cfg.Gateway.BodySpool.Effective().CgroupDir); err == nil {
+				app.PromptAudit.SetMemoryBudget(meter)
+			} else {
+				log.Printf("Prompt Audit worker memory budget unavailable: %v", err)
+			}
+		}
 		if err := app.PromptAudit.Start(context.Background()); err != nil {
 			// Startup continues so unrelated APIs stay up. Fail-closed (unavailable)
 			// applies only when a persisted blocking policy was observed; without

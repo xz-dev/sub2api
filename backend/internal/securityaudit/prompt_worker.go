@@ -27,6 +27,7 @@ type Runner struct {
 	metrics Metrics
 	clock   Clock
 	runtime WorkerRuntime
+	memory  MemoryBudget // charged before a payload is read back; nil: none
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -136,6 +137,19 @@ func (r *Runner) processSafely(ctx context.Context, workerID int, cfg ActiveConf
 func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig, job *Job) error {
 	baseFields := jobLogFields(job)
 	LogInfo(EventAuditStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "attempts": job.Attempts, "status": "processing"}))
+	// The payload belongs to no request: charge the hop's memory budget for
+	// reading and scanning it first (released on every return and on a
+	// panic, which processSafely recovers).
+	payloadLen, err := r.payload.Len(ctx, job.ID)
+	if err != nil {
+		return r.finishFailure(ctx, job, &GuardError{Code: "payload_missing", Retryable: false, Cause: err})
+	}
+	release, err := r.chargePayloadRead(ctx, job, payloadLen, minimumInputLimit(cfg.EnabledEndpoints()))
+	if err != nil {
+		r.setLastError("memory_charge_interrupted", err.Error())
+		return err
+	}
+	defer release()
 	scanText, err := r.payload.Get(ctx, job.ID)
 	if err != nil {
 		return r.finishFailure(ctx, job, &GuardError{Code: "payload_missing", Retryable: false, Cause: err})
