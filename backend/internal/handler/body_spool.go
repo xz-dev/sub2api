@@ -293,7 +293,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	// its Content-Length is the compressed size, so it is charged like a
 	// chunked body, on its decoded bytes (ingestFallbackBody).
 	encoding := requestContentEncoding(c)
-	limit, k := rt.cfg.FallbackLimit, rt.cfg.KPath
+	limit, k := fallbackLimit(rt.cfg, st.charge.Limit()), rt.cfg.KPath
 	if covered {
 		limit, k = rt.cfg.InlineLimit, rt.cfg.KSkel
 		if st.lease != nil {
@@ -376,6 +376,25 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
 	}
 	return true
+}
+
+// fallbackLimit is L as design D2 defines it: the largest body whose worst
+// charge on a fallback path fits, beside the idle working set and the
+// 32 MiB margin, under memory.max, and never above the configured limit
+// (at most 16 MiB). The worst charge is k_path × the body, plus the prompt
+// guard's decode (guardDecodeK × the body + guardFixedBytes; the guard can
+// be switched on at any time), plus the largest Content-Encoding decoder,
+// plus 24 KiB of granule and read-ahead rounding at each factor. So a body
+// at or below L fits on an idle hop; with other requests in flight it can
+// still get the D4 503 insufficient_memory, which carries the bytes needed
+// (review a4a7d843 minor: with L fixed at 16 MiB, bodies from 12.6 MiB got
+// that 503 on an idle 320m hop). Above L: 413 with limit_bytes = L.
+func fallbackLimit(cfg config.GatewayBodySpoolConfig, memoryMax int64) int64 {
+	k := cfg.KPath + guardDecodeK
+	room := memoryMax - bodyspool.ChargeMargin - cfg.IdleBaseline - guardFixedBytes - pkghttputil.MaxRequestBodyDecoderState
+	derived := int64(float64(room)/k) - 24<<10
+	derived -= derived % bodyspool.DefaultChargeStep
+	return max(0, min(cfg.FallbackLimit, derived))
 }
 
 // requestContentEncoding is the lower-cased Content-Encoding, "" for none

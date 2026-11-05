@@ -22,7 +22,12 @@ type GatewayBodySpoolConfig struct {
 	// TicketedInlineLimit is S for ticketed requests (8 MiB).
 	TicketedInlineLimit int64 `mapstructure:"ticketed_inline_limit"`
 	// FallbackLimit is L for paths that are not converted (at most 16 MiB).
+	// The hop lowers it to the largest body whose charge fits beside
+	// IdleBaseline under memory.max (design D2).
 	FallbackLimit int64 `mapstructure:"fallback_limit"`
+	// IdleBaseline is the hop's idle working set that the effective fallback
+	// limit leaves room for (design D2, D4).
+	IdleBaseline int64 `mapstructure:"idle_baseline"`
 	// DiskReserve is the free-space floor of every spool write (1 GiB).
 	DiskReserve int64 `mapstructure:"disk_reserve"`
 	// LedgerDir is the read-only capacity-ledger mount; empty refuses every
@@ -48,6 +53,9 @@ const (
 	DefaultBodySpoolInlineLimit         int64 = 16 << 20
 	DefaultBodySpoolTicketedInlineLimit int64 = 8 << 20
 	DefaultBodySpoolFallbackLimit       int64 = 16 << 20
+	// Settled idle working set measured at 320m: 33-38 MiB, once 57 MiB with
+	// the executable's page cache active; design D4 uses 45 MiB.
+	DefaultBodySpoolIdleBaseline int64 = 48 << 20
 	// Measured on the patched skeleton path: 10.7-13.1 at a 16 MiB text body
 	// in a 320m Sub2API (task 7.2 follow-up), rounded up with ~7 % margin.
 	DefaultBodySpoolKSkel          float64 = 14
@@ -69,6 +77,9 @@ func (c GatewayBodySpoolConfig) Effective() GatewayBodySpoolConfig {
 	}
 	if c.FallbackLimit <= 0 {
 		c.FallbackLimit = DefaultBodySpoolFallbackLimit
+	}
+	if c.IdleBaseline <= 0 {
+		c.IdleBaseline = DefaultBodySpoolIdleBaseline
 	}
 	if c.DiskReserve <= 0 {
 		c.DiskReserve = bodyspool.DefaultDiskReserve
@@ -95,6 +106,7 @@ func setBodySpoolDefaults() {
 	viper.SetDefault("gateway.body_spool.inline_limit", DefaultBodySpoolInlineLimit)
 	viper.SetDefault("gateway.body_spool.ticketed_inline_limit", DefaultBodySpoolTicketedInlineLimit)
 	viper.SetDefault("gateway.body_spool.fallback_limit", DefaultBodySpoolFallbackLimit)
+	viper.SetDefault("gateway.body_spool.idle_baseline", DefaultBodySpoolIdleBaseline)
 	viper.SetDefault("gateway.body_spool.disk_reserve", bodyspool.DefaultDiskReserve)
 	viper.SetDefault("gateway.body_spool.ledger_dir", "")
 	viper.SetDefault("gateway.body_spool.cgroup_dir", "")

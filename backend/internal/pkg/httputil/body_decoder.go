@@ -35,6 +35,9 @@ const (
 	// Huffman tables): measured 50 KiB.
 	requestFlateState = 64 << 10
 	requestPeekBuffer = 4 << 10
+
+	// MaxRequestBodyDecoderState is the largest StateBytes of any decoder.
+	MaxRequestBodyDecoderState = MaxRequestZstdWindow + requestZstdBlockState + requestFlateState + requestPeekBuffer
 )
 
 // ErrRequestZstdWindow: a zstd request body declares a window above

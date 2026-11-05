@@ -48,7 +48,7 @@ func TestBodySpoolEncodedBodyChargedDecoded(t *testing.T) {
 	enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	rt := bodySpoolRuntimeFor(h.cfg)
 	require.NoError(t, rt.err)
-	limit := rt.cfg.FallbackLimit
+	limit := fallbackLimit(rt.cfg, 320<<20)
 	plain := []byte(`{"model":"gpt-5.5","input":"` + strings.Repeat("a", 48<<20) + `"}`)
 	for _, enc := range []string{"gzip", "zstd", "deflate"} {
 		z := encodeBody(t, enc, plain)
