@@ -62,8 +62,8 @@ func chunked(c *gin.Context) {
 }
 
 // TestOpenAIResponsesSingleTextBody16MiBAt320m: one 16 MiB text body (inline
-// = S) at the default k_skel (13) on 320m with a 45 MiB idle is charged
-// 208 MiB once and
+// = S) at the default k_skel (15) on 320m with a 45 MiB idle is charged
+// 240 MiB once and
 // passes; the charge is held while the request runs and dropped after.
 func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 	gin.SetMode(gin.TestMode)

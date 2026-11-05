@@ -192,7 +192,7 @@ func TestConcurrentChargeNeverCrossesLimit(t *testing.T) {
 }
 
 // TestTicketedChargeUnderSmallLoad (task 4.2): one ticketed 256 MiB request
-// (k_mem 0.1 × N + P_h 16 MiB + k_skel 14 × 8 MiB inline, 153.6 MiB) holds
+// (k_mem 0.1 × N + P_h 16 MiB + k_skel 15 × 8 MiB inline, 161.6 MiB) holds
 // its charge at Sub2API's 320m with a 45 MiB working set while 120 truly
 // small requests (a 40-byte body each) ingest concurrently with the default
 // charge step and hold their charges, as during a streamed response. All of
@@ -202,7 +202,7 @@ func TestTicketedChargeUnderSmallLoad(t *testing.T) {
 	_, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(45*mib))
 	m.Reclaim = nil
 	const budget = (320 - 45 - 32) * mib
-	const kSkel = 14
+	const kSkel = 15
 	big := newCharge(t, m)
 	require.NoError(t, big.Add(256*mib/10+16*mib+kSkel*8*mib), "the ticketed request is admitted")
 

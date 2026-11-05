@@ -57,12 +57,13 @@ const (
 	// the executable's page cache active; design D4 uses 45 MiB.
 	DefaultBodySpoolIdleBaseline int64 = 48 << 20
 	// Measured with the prompt guard on, (memory.peak - idle memory.current)
-	// / 16 MiB in a 320m Sub2API, after review a4a7d843 removed the guard's
-	// text copies: at most 12.19 (async, text-heavy corpus d10-utext-16, 20
-	// settled runs), 11.31 (async, D10 text-16, 20 runs), 10.38 (blocking,
-	// 10 runs); rounded up with ~7 % margin. S_h = (320 - 32 - 45) / 13 =
-	// 18.7 MiB >= S.
-	DefaultBodySpoolKSkel          float64 = 13
+	// / 16 MiB in a 320m Sub2API: at most 14.00 (blocking) and 13.88 (async)
+	// on the structure-heavy corpus d10-small-items-16 (197,288 items of
+	// ~85 B; 14.0 with the guard off, the cost is the Responses->Chat
+	// conversion), 11.00 (async, d10-utext-16), 11.56 (async, D10 text-16);
+	// rounded up with ~7 % margin, within the bound 15.1.
+	// S_h = (320 - 32 - 48) / 15 = 16.0 MiB >= S.
+	DefaultBodySpoolKSkel          float64 = 15
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
