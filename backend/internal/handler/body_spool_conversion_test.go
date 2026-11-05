@@ -42,11 +42,11 @@ func TestBodySpoolConvertedRequestTopUp(t *testing.T) {
 		require.Zero(t, meter.Outstanding(), "%s: released at chain return", accountType)
 		return n
 	}
-	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
+	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "apikey")
 	enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
 	cfg := bodySpoolRuntimeFor(h.cfg).cfg
 	want := chargeBytes(cfg.KConv-cfg.KSkel, roundUpGranule(int64(len(body))))
-	native, converted := held("oauth"), held("apikey_chat")
+	native, converted := held("apikey"), held("apikey_chat")
 	t.Logf("held while upstream runs: native %d B, converted %d B (k_skel %.1f, k_conv %.1f)", native, converted, cfg.KSkel, cfg.KConv)
 	require.Equal(t, want, converted-native)
 }
@@ -81,9 +81,9 @@ func TestBodySpoolConvertedRequestRefusalIsFinal(t *testing.T) {
 	sConv := conversionLimit(cfg, 320<<20, true, false)
 	t.Logf("S_conv at 320m = %d B (%.2f MiB), k_conv %.1f", sConv, float64(sConv)/(1<<20), cfg.KConv)
 	require.Less(t, sConv, cfg.InlineLimit)
-	require.EqualValues(t, 31, cfg.KConv)
-	require.EqualValues(t, 8089600, sConv, "S_conv at 320m with k_conv 31 (7.71 MiB)")
-	require.EqualValues(t, 6963200, conversionLimit(cfg, 320<<20, false, false), "L_conv at 320m with k_conv 31")
+	require.EqualValues(t, 65, cfg.KConv)
+	require.EqualValues(t, 3846144, sConv, "S_conv at 320m with k_conv 65 (3.67 MiB)")
+	require.EqualValues(t, 3493888, conversionLimit(cfg, 320<<20, false, false), "L_conv at 320m with k_conv 65")
 
 	above := largeResponsesTextBody(int(sConv) + 1<<20)
 	upstream, code, e := run("apikey_chat", above, 0)
@@ -92,8 +92,14 @@ func TestBodySpoolConvertedRequestRefusalIsFinal(t *testing.T) {
 	require.Equal(t, bodySpoolHop, e["hop"])
 	require.EqualValues(t, sConv, e["limit_bytes"])
 	require.Zero(t, upstream.calls.Load(), "final: no upstream call, no failover")
-	_, code, _ = run("oauth", above, 0)
+	_, code, _ = run("apikey", above, 0)
 	require.Equal(t, http.StatusOK, code, "a Responses-native account takes it (S = 16 MiB)")
+	// The Codex OAuth transform decodes the whole body: a converter (rr4).
+	upstream, code, e = run("oauth", above, 0)
+	require.Equal(t, http.StatusRequestEntityTooLarge, code, "%v", e)
+	require.Equal(t, "request_too_large", e["code"])
+	require.EqualValues(t, sConv, e["limit_bytes"])
+	require.Zero(t, upstream.calls.Load(), "final: no upstream call, no failover")
 
 	// Fits S_conv, but beside a busy working set only k_skel fits, not k_conv.
 	fits := largeResponsesTextBody(int(sConv) - 64<<10)
@@ -103,6 +109,6 @@ func TestBodySpoolConvertedRequestRefusalIsFinal(t *testing.T) {
 	require.Equal(t, "insufficient_memory", e["code"])
 	require.Equal(t, bodySpoolHop, e["hop"])
 	require.Zero(t, upstream.calls.Load(), "final: no upstream call, no failover")
-	_, code, _ = run("oauth", fits, busy)
+	_, code, _ = run("apikey", fits, busy)
 	require.Equal(t, http.StatusOK, code)
 }

@@ -364,7 +364,7 @@ func TestOpenAIResponsesCompactFallbackLimit(t *testing.T) {
 func TestOpenAIResponsesConcurrentMemoryCharge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &largeBodyDrainUpstream{block: make(chan struct{}), entered: make(chan struct{})}
-	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	// k_skel 4 x 6 MiB = 24 MiB per request; 64 MiB - 32 MiB margin fits one.
 	enableBodySpoolForTest(t, h.cfg, true, 64<<20, map[string]any{"k_skel": 4})
 	body := largeResponsesTextBody(6 << 20)

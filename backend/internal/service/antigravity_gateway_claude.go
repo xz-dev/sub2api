@@ -33,6 +33,11 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	if account.Type == AccountTypeUpstream {
 		return s.ForwardUpstream(ctx, c, account, body)
 	}
+	// A protocol converter (Claude -> Gemini): the converted request's
+	// charge before the body is decoded (review rr4).
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
 
 	startTime := time.Now()
 
