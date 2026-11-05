@@ -56,9 +56,12 @@ const (
 	// Settled idle working set measured at 320m: 33-38 MiB, once 57 MiB with
 	// the executable's page cache active; design D4 uses 45 MiB.
 	DefaultBodySpoolIdleBaseline int64 = 48 << 20
-	// Measured on the patched skeleton path: 10.7-13.1 at a 16 MiB text body
-	// in a 320m Sub2API (task 7.2 follow-up), rounded up with ~7 % margin.
-	DefaultBodySpoolKSkel          float64 = 14
+	// Measured with the prompt guard on, (memory.peak - idle memory.current)
+	// / 16 MiB in a 320m Sub2API, after review a4a7d843 removed the guard's
+	// text copies: at most 11.94 (async, text-heavy corpus d10-utext-16),
+	// 11.31 (async, D10 text-16), 10.38 (blocking); rounded up with ~9 %
+	// margin. S_h = (320 - 32 - 45) / 13 = 18.7 MiB >= S.
+	DefaultBodySpoolKSkel          float64 = 13
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17
 	DefaultBodySpoolPageCacheBound int64   = 16 << 20
