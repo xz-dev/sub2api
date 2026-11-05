@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -305,5 +306,39 @@ func TestChargeReclaimsOnceBeforeRefusing(t *testing.T) {
 	require.Equal(t, 1, reclaims)
 	c.Release()
 	d.Release()
+	require.Zero(t, m.Outstanding())
+}
+
+// TestReclaimReleasedIsRateLimited: ReclaimReleased starts one background
+// ReleaseReclaim; a second call within reclaimInterval does nothing. Release
+// itself never reclaims (the request may still hold its buffers), and the
+// refusal path's Reclaim is not involved.
+func TestReclaimReleasedIsRateLimited(t *testing.T) {
+	_, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(40*mib))
+	runs := make(chan struct{}, 8)
+	m.ReleaseReclaim = func() { runs <- struct{}{} }
+	m.Reclaim = func() { t.Error("refusal-path Reclaim called") }
+
+	large := newCharge(t, m)
+	require.NoError(t, large.Add(ReclaimAfterRelease))
+	large.Release()
+	select {
+	case <-runs:
+		t.Fatal("Release reclaimed by itself")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	m.ReclaimReleased()
+	select {
+	case <-runs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReclaimReleased did not reclaim")
+	}
+	m.ReclaimReleased()
+	select {
+	case <-runs:
+		t.Fatal("a second call within reclaimInterval reclaimed")
+	case <-time.After(200 * time.Millisecond):
+	}
 	require.Zero(t, m.Outstanding())
 }

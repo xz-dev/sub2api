@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -85,6 +86,9 @@ type bodySpoolState struct {
 	lease    *bodyspool.Lease
 	charge   *bodyspool.Charge
 	released bool
+	// chargedAtRelease is the charge's size when it was released; it tells
+	// ReleaseLargeRequestState whether this was a large request.
+	chargedAtRelease int64
 }
 
 // releaseRequestBodySpool closes the spool and drops the lease and the
@@ -106,7 +110,43 @@ func releaseRequestBodySpool(c *gin.Context) {
 		_ = st.file.Close() // idempotent
 	}
 	st.lease.Release()
+	if st.charge != nil {
+		st.chargedAtRelease = st.charge.Bytes()
+	}
 	st.charge.Release()
+}
+
+// ReleaseLargeRequestState must be the outermost gateway middleware (inside
+// only Recovery). gin keeps a finished request's Context in a sync.Pool until
+// another request reuses it, so its Keys (this state, parsed copies of the
+// body) and its Request (the skeleton as Body, the spool in the request
+// context) stayed reachable after the request: one GC after a 16 MiB text
+// request the live heap was still 41 MiB, and 25 MiB only after a second GC
+// emptied the pool's victim cache. After a request whose charge was at least
+// bodyspool.ReclaimAfterRelease, once every middleware has returned, it drops
+// those references and returns the freed heap to the OS. Smaller requests
+// are left as they are.
+func ReleaseLargeRequestState(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		v, ok := c.Get(bodySpoolStateKey)
+		if !ok {
+			return
+		}
+		st := v.(*bodySpoolState)
+		if !st.released || st.chargedAtRelease < bodyspool.ReclaimAfterRelease {
+			return
+		}
+		if c.Request != nil {
+			r := c.Request.WithContext(context.Background())
+			r.Body, r.GetBody = http.NoBody, nil
+			c.Request = r
+		}
+		c.Keys = nil
+		if rt := bodySpoolRuntimeFor(cfg); rt != nil && rt.meter != nil {
+			rt.meter.ReclaimReleased()
+		}
+	}
 }
 
 // BodySpoolIngest is the production entry: it must run before any
