@@ -166,3 +166,32 @@ func TestBodySpoolChargeHeldUntilChainReturns(t *testing.T) {
 	require.EqualValues(t, int64(config.DefaultBodySpoolKSkel*4)<<20, afterHandler, "still charged after the handler returned")
 	require.Zero(t, meter.Outstanding())
 }
+
+// TestOpenAIResponsesFreshHopBaseIsWorkingSet: on a fresh hop memory.current
+// is 85 MiB, 40 MiB of it inactive page cache. The 224 MiB charge fits
+// against the working set (45 MiB). An unreadable memory.stat refuses the
+// request explicitly before any byte reaches upstream.
+func TestOpenAIResponsesFreshHopBaseIsWorkingSet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := largeResponsesTextBody(16 << 20)
+	upstream := &largeBodyDrainUpstream{}
+	h := newLargeBodyTestHandler(t, upstream, "oauth")
+	env := enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
+	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.current"), []byte(strconv.Itoa(85<<20)+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.stat"), []byte("anon 30000000\ninactive_file "+strconv.Itoa(40<<20)+"\n"), 0o600))
+	rt := bodySpoolRuntimeFor(h.cfg)
+	require.NoError(t, rt.err)
+	rt.meter.Reclaim = nil
+
+	c, rec := newLargeBodyTestContext("/v1/responses", body, "")
+	h.Responses(c)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.EqualValues(t, 1, upstream.calls.Load())
+
+	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.stat"), nil, 0o600))
+	c, rec = newLargeBodyTestContext("/v1/responses", body, "")
+	h.Responses(c)
+	requireCapacityError(t, rec, http.StatusInternalServerError, "body_spool_misconfigured", "sub2api")
+	require.EqualValues(t, 1, upstream.calls.Load())
+	require.Zero(t, rt.meter.Outstanding())
+}

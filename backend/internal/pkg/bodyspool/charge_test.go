@@ -16,6 +16,7 @@ func fakeCgroup(t *testing.T, max, current string) (string, *Meter) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.max"), []byte(max+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(current+"\n"), 0o600))
+	writeStat(t, dir, 0)
 	m, err := OpenMeter(dir)
 	if err != nil {
 		return dir, nil
@@ -24,6 +25,88 @@ func fakeCgroup(t *testing.T, max, current string) (string, *Meter) {
 }
 
 const mib = 1 << 20
+
+func writeStat(t *testing.T, dir string, inactiveFile int64) {
+	t.Helper()
+	stat := "anon 1000\nfile 2000\nactive_file 300\ninactive_file " + strconv.FormatInt(inactiveFile, 10) + "\nslab 10\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"), []byte(stat), 0o600))
+}
+
+func TestWorkingSetBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current int64
+		stat    string
+		want    int64
+		wantErr bool
+	}{
+		{"subtracts inactive_file", 1000, "anon 200\nactive_file 100\ninactive_file 700\n", 300, false},
+		{"active_file is not a match", 1000, "active_file 900\ninactive_file 0\n", 1000, false},
+		{"inactive_file above current keeps current", 500, "inactive_file 700\n", 500, false},
+		{"no trailing newline", 1000, "inactive_file 1000", 0, false},
+		{"missing line", 1000, "anon 1000\nfile 0\n", 0, true},
+		{"empty stat", 1000, "", 0, true},
+		{"unparsable value", 1000, "inactive_file x\n", 0, true},
+		{"negative value", 1000, "inactive_file -1\n", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := workingSetBytes(tc.current, []byte(tc.stat))
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestChargeBaseIsWorkingSet: the fresh-hop case. 85 MiB current of which
+// 40 MiB is inactive page cache leaves room for the 224 MiB text-16 charge.
+func TestChargeBaseIsWorkingSet(t *testing.T) {
+	dir, m := fakeCgroup(t, strconv.Itoa(320*mib), strconv.Itoa(85*mib))
+	require.NotNil(t, m)
+	c := newCharge(t, m)
+	require.Error(t, c.Add(224*mib), "320 − 85 − 32 = 203 < 224")
+	c.Release()
+	m.Reclaim = nil
+	writeStat(t, dir, 40*mib)
+	c = newCharge(t, m)
+	require.NoError(t, c.Add(224*mib), "320 − (85 − 40) − 32 = 243 ≥ 224")
+	c.Release()
+}
+
+// TestChargeRefusesUnreadableStat: without memory.stat the meter does not
+// open, and a stat that later turns unreadable refuses the request.
+func TestChargeRefusesUnreadableStat(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.max"), []byte(strconv.Itoa(320*mib)), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte("0"), 0o600))
+	_, err := OpenMeter(dir)
+	require.ErrorContains(t, err, "memory.stat")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.stat"), []byte("anon 0\n"), 0o600))
+	_, err = OpenMeter(dir)
+	require.ErrorContains(t, err, "no inactive_file line")
+
+	writeStat(t, dir, 0)
+	m, err := OpenMeter(dir)
+	require.NoError(t, err)
+	defer m.Close()
+	require.NoError(t, os.Truncate(filepath.Join(dir, "memory.stat"), 0))
+	_, err = m.NewCharge()
+	require.ErrorContains(t, err, "memory.stat")
+	require.Zero(t, m.Outstanding())
+
+	// The reclaim re-read refuses too: it never falls back to admitting.
+	writeStat(t, dir, 0)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "memory.current"), []byte(strconv.Itoa(300*mib)), 0o600))
+	c, err := m.NewCharge()
+	require.NoError(t, err)
+	m.Reclaim = func() { _ = os.Truncate(filepath.Join(dir, "memory.stat"), 0) }
+	require.ErrorContains(t, c.Add(mib), "memory.stat")
+	require.Zero(t, m.Outstanding())
+}
 
 func newCharge(t *testing.T, m *Meter) *Charge {
 	t.Helper()

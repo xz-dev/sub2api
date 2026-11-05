@@ -24,6 +24,11 @@ import (
 // own charge) and refuse a 16 MiB text body at about 11 MiB on 320m. Other
 // requests' live bytes are in the snapshot and in their charges, so that
 // double count stays and errs toward refusing.
+//
+// The snapshot is the working set, memory.current − inactive_file (keeper
+// design D3): a fresh hop's memory.current is mostly reclaimable page cache
+// from startup, which the kernel drops before it OOM-kills. Active file
+// pages stay counted. An unreadable memory.stat refuses; it never admits.
 const ChargeMargin int64 = 32 << 20
 
 // CodeInsufficientMemory is the 503 refusal code.
@@ -38,9 +43,11 @@ func (e *InsufficientMemoryError) Error() string {
 	return fmt.Sprintf("insufficient memory: %d bytes are needed and %d are free in the cgroup after outstanding charges and the %d-byte margin", e.Need, e.Free, ChargeMargin)
 }
 
-// Meter reads memory.max and memory.current through fds opened once.
+// Meter reads memory.max, memory.current and memory.stat through fds opened
+// once.
 type Meter struct {
 	max, cur    *os.File
+	stat        *os.File
 	outstanding atomic.Int64
 
 	// Reclaim returns freed heap to the OS (debug.FreeOSMemory). A first
@@ -82,10 +89,15 @@ func OpenMeter(dir string) (*Meter, error) {
 		_ = mx.Close()
 		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
 	}
-	m := &Meter{max: mx, cur: cur, Reclaim: debug.FreeOSMemory}
-	if _, _, err := m.read(); err != nil {
+	stat, err := os.Open(filepath.Join(dir, "memory.stat"))
+	if err != nil {
 		_ = mx.Close()
 		_ = cur.Close()
+		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
+	}
+	m := &Meter{max: mx, cur: cur, stat: stat, Reclaim: debug.FreeOSMemory}
+	if _, _, err := m.read(); err != nil {
+		m.Close()
 		return nil, err
 	}
 	return m, nil
@@ -106,14 +118,47 @@ func (m *Meter) read() (limit, current int64, err error) {
 	if limit, err = preadInt(m.max); err != nil {
 		return 0, 0, err
 	}
-	current, err = preadInt(m.cur)
-	return limit, current, err
+	if current, err = preadInt(m.cur); err != nil {
+		return 0, 0, err
+	}
+	// memory.stat is about 1.5 KiB on current kernels.
+	var buf [16 << 10]byte
+	n, rerr := m.stat.ReadAt(buf[:], 0)
+	if n == 0 && rerr != nil {
+		return 0, 0, fmt.Errorf("bodyspool: memory charge: read %s: %w", m.stat.Name(), rerr)
+	}
+	if current, err = workingSetBytes(current, buf[:n]); err != nil {
+		return 0, 0, fmt.Errorf("bodyspool: memory charge: %s: %w", m.stat.Name(), err)
+	}
+	return limit, current, nil
+}
+
+// workingSetBytes is memory.current minus the inactive_file of memory.stat.
+// A stat without a parsable inactive_file line is an error. inactive_file
+// above current (the two files are read separately) keeps current.
+func workingSetBytes(current int64, stat []byte) (int64, error) {
+	for _, line := range bytes.Split(stat, []byte("\n")) {
+		v, ok := bytes.CutPrefix(line, []byte("inactive_file "))
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(string(bytes.TrimSpace(v)), 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("inactive_file %q is not a byte count", v)
+		}
+		if n > current {
+			return current, nil
+		}
+		return current - n, nil
+	}
+	return 0, errors.New("no inactive_file line")
 }
 
 // Close releases the cgroup file descriptors.
 func (m *Meter) Close() {
 	_ = m.max.Close()
 	_ = m.cur.Close()
+	_ = m.stat.Close()
 }
 
 // Outstanding is the sum of live charges.
@@ -122,12 +167,12 @@ func (m *Meter) Outstanding() int64 { return m.outstanding.Load() }
 // Charge is one request's share of the meter.
 type Charge struct {
 	m           *Meter
-	limit, base int64 // memory.max and memory.current at NewCharge
+	limit, base int64 // memory.max and the working set at NewCharge
 	n           atomic.Int64
 }
 
 // NewCharge starts an empty charge. Call it before the request's body is
-// read: it snapshots memory.current while none of the request's bytes exist.
+// read: it snapshots the working set while none of the request's bytes exist.
 func (m *Meter) NewCharge() (*Charge, error) {
 	limit, current, err := m.read()
 	if err != nil {

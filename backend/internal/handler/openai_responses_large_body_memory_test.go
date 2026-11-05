@@ -113,7 +113,8 @@ func largeResponsesImagesBody(size int) []byte {
 }
 
 // spoolTestEnv enables gateway.body_spool for cfg: spool on a temp disk dir,
-// a fake cgroup (memory.max/memory.current) and optionally a ledger dir.
+// a fake cgroup (memory.max/memory.current/memory.stat) and optionally a
+// ledger dir.
 type spoolTestEnv struct {
 	ledger string
 	cgroup string
@@ -124,6 +125,7 @@ func enableBodySpoolForTest(t *testing.T, cfg *config.Config, withLedger bool, c
 	env := spoolTestEnv{cgroup: t.TempDir()}
 	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.max"), []byte(strconv.FormatInt(cgroupMax, 10)+"\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.current"), []byte("0\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(env.cgroup, "memory.stat"), []byte("anon 0\ninactive_file 0\n"), 0o600))
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	require.NoError(t, os.Mkdir(spoolDir, 0o700))
 	v := viper.New()
