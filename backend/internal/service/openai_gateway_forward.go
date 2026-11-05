@@ -1407,7 +1407,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// previous_response_id，避免携带状态字段被上游拒绝。
 	body = normalizeDeepSeekResponsesRequestBody(account, body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	req, err := newOpenAIUpstreamBodyRequest(ctx, c, "POST", targetURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1531,6 +1531,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
+	s.applyCapacityTicketHeader(account, req)
 	return req, nil
 }
 

@@ -189,7 +189,7 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		sessionID = grokStickyAffinitySeed(sessionID, body)
 	}
 
-	currentHash, legacyHash := deriveOpenAISessionHashes(sessionID)
+	currentHash, legacyHash := deriveOpenAISessionHashesForRequest(c, sessionID)
 	attachOpenAILegacySessionHashToGin(c, legacyHash)
 	return currentHash
 }
