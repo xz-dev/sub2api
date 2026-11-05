@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,14 +29,24 @@ import (
 //     skeleton; inline bytes above S get 413.
 //   - Every other POST is a fallback path: above L it gets a 413 naming the
 //     path and L.
-//   - The memory charge snapshots memory.current before any byte is read.
-//     With a Content-Length, the whole worst case (k_skel x min(N, S), or
-//     k_path x min(N, L), plus the ticketed k_mem x N + P_h) is charged once,
-//     before reading. A chunked body is charged per 1 MiB as its inline (or
-//     fallback) bytes cross each step, against the same snapshot. The charge
-//     is released when the handler chain returns.
+//   - The memory charge snapshots the working set before any byte is read
+//     and charges k x the real inline (or fallback) bytes in 4 KiB granules,
+//     each before its bytes are allocated, against that snapshot. Every
+//     request pays its first granule (and, on covered paths, the ingest's
+//     32 KiB read buffer) before reading; there is no larger minimum.
+//   - Up front, before reading: the ticketed k_mem x N + P_h; on covered
+//     paths with a Content-Length of at least 1 MiB, the worst case
+//     k_skel x min(N, S) (the skeleton is then preallocated); on fallback
+//     paths with a Content-Length, k_path x N (the whole body is read into
+//     one buffer, so that is its real size). The charge is released when
+//     the handler chain returns.
 
 const bodySpoolHop = "sub2api"
+
+// bodySpoolUpfrontMin: a covered body with a Content-Length of at least this
+// is charged its worst case once, before reading. Smaller and chunked
+// bodies are charged as their bytes arrive.
+const bodySpoolUpfrontMin = 1 << 20
 
 type bodySpoolRuntime struct {
 	cfg   config.GatewayBodySpoolConfig
@@ -222,12 +233,21 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 			limit = rt.cfg.TicketedInlineLimit
 		}
 	}
-	// prepaid: inline (or fallback) bytes already covered by the up-front
-	// charge, rounded up to the step the readers charge in.
-	var prepaid int64
-	if size >= 0 && (covered || size <= limit) {
-		prepaid = roundUpStep(min(size, limit))
-		upfront += int64(k * float64(prepaid))
+	// prepaid: inline (or fallback) bytes covered before reading, in whole
+	// granules. At least the first granule, so the first buffer is charged
+	// before it exists.
+	prepaid := int64(bodyspool.DefaultChargeStep)
+	var sizeHint int64
+	switch {
+	case covered && size >= bodySpoolUpfrontMin:
+		prepaid = roundUpGranule(min(size, limit))
+		sizeHint = prepaid
+	case !covered && size >= 0 && size <= limit:
+		prepaid = max(prepaid, roundUpGranule(size+1)) // the reader's buffer is size+1
+	}
+	upfront += chargeBytes(k, prepaid)
+	if covered {
+		upfront += bodyspool.ReadBufferBytes
 	}
 	if err := st.charge.Add(upfront); err != nil {
 		return fail(refusalFor(err, 0))
@@ -257,12 +277,14 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		Threshold:   rt.cfg.Threshold,
 		KeepPrefix:  bodyspool.DefaultKeepPrefix,
 		InlineLimit: inline,
-		SizeHint:    min(size, inline), // charged up front; -1 (chunked) means none
+		SizeHint:    sizeHint, // charged up front; 0 means none
 		Charge: func(n int64) error {
-			if inlineSeen += n; inlineSeen <= prepaid {
-				return nil
+			prev := inlineSeen
+			inlineSeen += n
+			if over := inlineSeen - max(prev, prepaid); over > 0 {
+				return st.charge.Add(chargeBytes(k, over))
 			}
-			return st.charge.Add(int64(k * float64(n)))
+			return nil
 		},
 		Observe: func(raw int64) error {
 			if raw >= bodyspool.TicketThreshold && st.lease == nil {
@@ -286,13 +308,20 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	return true
 }
 
-func roundUpStep(n int64) int64 {
-	const s = bodyspool.DefaultChargeStep
-	return (n + s - 1) / s * s
+func roundUpGranule(n int64) int64 {
+	const g = bodyspool.DefaultChargeStep
+	return (n + g - 1) / g * g
 }
 
-// chargingReader charges k x every 1 MiB past charged before handing the
-// bytes on.
+// chargeBytes is k x n, rounded up.
+func chargeBytes(k float64, n int64) int64 { return int64(math.Ceil(k * float64(n))) }
+
+// chargingReadMax bounds one Read, so the charge runs at most this far
+// ahead of the bytes read.
+const chargingReadMax = 16 << 10
+
+// chargingReader charges k x the bytes past charged, in whole granules,
+// before handing them on.
 type chargingReader struct {
 	r       interface{ Read([]byte) (int, error) }
 	charge  *bodyspool.Charge
@@ -302,14 +331,18 @@ type chargingReader struct {
 }
 
 func (r *chargingReader) Read(p []byte) (int, error) {
-	if r.read+int64(len(p)) > r.charged {
-		if err := r.charge.Add(int64(r.k * float64(bodyspool.DefaultChargeStep))); err != nil {
+	if len(p) == 0 {
+		return r.r.Read(p)
+	}
+	if need := r.read + int64(min(len(p), chargingReadMax)) - r.charged; need > 0 {
+		g := roundUpGranule(need)
+		if err := r.charge.Add(chargeBytes(r.k, g)); err != nil {
 			return 0, err
 		}
-		r.charged += bodyspool.DefaultChargeStep
+		r.charged += g
 	}
-	if max := r.charged - r.read; int64(len(p)) > max {
-		p = p[:max]
+	if room := r.charged - r.read; int64(len(p)) > room {
+		p = p[:room]
 	}
 	n, err := r.r.Read(p)
 	r.read += int64(n)

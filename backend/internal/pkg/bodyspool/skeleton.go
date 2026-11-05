@@ -10,8 +10,8 @@ import (
 const (
 	DefaultThreshold   = 64 << 10 // T
 	DefaultKeepPrefix  = 64       // raw bytes kept inline before the marker
-	DefaultChargeStep  = 1 << 20  // skeleton growth per Charge call
-	readChunk          = 256 << 10
+	DefaultChargeStep  = 4 << 10  // charge granule: inline bytes per Charge step
+	ReadBufferBytes    = 32 << 10 // the ingest's read buffer; the caller charges it
 	maxTrackedKeyBytes = 32
 	maxTrackedDepth    = 64 // deeper values are never tier A (bounded scratch)
 )
@@ -21,9 +21,11 @@ type Options struct {
 	Threshold   int   // T; a tier-A string of at least T bytes is spooled
 	KeepPrefix  int   // raw bytes of a spooled string kept inline
 	InlineLimit int64 // S; skeleton bytes above it fail with *InlineLimitError
-	ChargeStep  int64 // skeleton bytes per Charge call
-	// Charge is called with ChargeStep before the skeleton may grow by that
-	// many bytes; an error stops the ingest.
+	ChargeStep  int64 // charge granule in inline bytes
+	// Charge is called with a multiple of ChargeStep before the inline bytes
+	// held (skeleton plus the pending-string scratch) may grow past what was
+	// charged; an error stops the ingest. The caller scales it by k and
+	// charges ReadBufferBytes itself before calling Ingest.
 	Charge func(inlineBytes int64) error
 	// Observe is called with the raw byte total after each read; an error
 	// stops the ingest before the next read.
@@ -138,7 +140,7 @@ type ingest struct {
 }
 
 func (in *ingest) run(r io.Reader) error {
-	buf := make([]byte, readChunk)
+	buf := make([]byte, ReadBufferBytes)
 	var pos int64
 	for {
 		n, rerr := r.Read(buf)
@@ -214,6 +216,9 @@ func (in *ingest) byte(c byte, pos int64) error {
 	in.strLen++
 	if in.mode == strInline {
 		return in.emit(c)
+	}
+	if err := in.reserve(int64(len(in.skel) + len(in.str) + 1)); err != nil {
+		return err
 	}
 	in.str = append(in.str, c)
 	if in.strLen < int64(in.opt.Threshold) {
@@ -341,14 +346,28 @@ func (in *ingest) emit(p ...byte) error {
 	if in.opt.InlineLimit > 0 && need > in.opt.InlineLimit {
 		return &InlineLimitError{Limit: in.opt.InlineLimit}
 	}
-	for in.charged < need {
-		if in.opt.Charge != nil {
-			if err := in.opt.Charge(in.opt.ChargeStep); err != nil {
-				return err
-			}
-		}
-		in.charged += in.opt.ChargeStep
+	if err := in.reserve(need); err != nil {
+		return err
 	}
 	in.skel = append(in.skel, p...)
+	return nil
+}
+
+// reserve charges whole granules until at least need inline bytes are
+// covered. The pending string's bytes are charged as they are buffered and
+// either move into the skeleton or are spooled, so the charge stays at or
+// above the inline bytes held.
+func (in *ingest) reserve(need int64) error {
+	if need <= in.charged {
+		return nil
+	}
+	step := in.opt.ChargeStep
+	add := (need - in.charged + step - 1) / step * step
+	if in.opt.Charge != nil {
+		if err := in.opt.Charge(add); err != nil {
+			return err
+		}
+	}
+	in.charged += add
 	return nil
 }
