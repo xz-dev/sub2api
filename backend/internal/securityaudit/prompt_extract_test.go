@@ -61,6 +61,11 @@ func TestPromptExtractionMatchesLegacy(t *testing.T) {
 		`{"questions":{"q2":{"type":"t","criteria":"c","x":"y"},"q1":"plain"},"state":{"b":1,"a":"s"},"model":"m","ext":["e",{"k":"v"}]}`,
 		`{"questions":["a",{"b":"c"}],"state":"st","z":"zz","z":"last"}`,
 		`[1,2]`, `"text"`, `null`, `{}`, `{"input":1e400}`, `{"input":"a"} x`, `{"input":"\xff"}`, `{"a":1,}`, ``, `  {"input":"ws"}  `,
+		// invalid UTF-8 (review rr3 blocker 1): each invalid byte decodes to U+FFFD
+		"{\"input\":\"hello \xff world\"}", "{\"input\":\"\xff\xfe\"}",
+		"{\"input\":[{\"role\":\"user\",\"content\":\"a\xff\xfe\"},{\"role\":\"assistant\",\"content\":\"\xc3\"}]}",
+		"{\"messages\":[{\"role\":\"us\xffer\",\"content\":\"m\"},{\"role\":\"user\",\"content\":\"\\u00e9\xed\xa0\x80\\n\xe2\x82\"}]}",
+		"{\"questions\":{\"\xff\":\"x\",\"\xfe\":\"y\"},\"state\":\"s\xff\"}", "{\"prompt\":\"p\xff\",\"\xffprompt\":\"q\"}",
 	}
 	for _, body := range bodies {
 		for _, protocol := range parityProtocols {
@@ -89,10 +94,13 @@ var (
 		"system_instruction", "requests", "instances", "prompt", "questions", "state", "type", "response", "\\u0069nput"}
 	guardDocKeys = []string{"role", "content", "text", "type", "input", "messages", "instructions", "system", "response",
 		"parts", "contents", "systemInstruction", "system_instruction", "instances", "requests", "prompt", "Prompt",
-		"input-prompt", "questions", "state", "model", "stream", "criteria", "q", "\\u0072ole", "c\\u006fntent", "x"}
+		"input-prompt", "questions", "state", "model", "stream", "criteria", "q", "\\u0072ole", "c\\u006fntent", "x",
+		"\xffk", "\xfek"}
 	guardDocStrings = []string{"user", "assistant", "model", "tool", "system", "developer", "USER", " user ", "bot",
 		"input_text", "output_text", "text", "image_url", "response.create", "", " ", "hello", "a\\nb", "\\u00e9t\\u00e9",
-		"\\ud800x", "https://x", "data:image/png", "İnput_text", "\\u212a", "same", "same", "\\u0000z"}
+		"\\ud800x", "https://x", "data:image/png", "İnput_text", "\\u212a", "same", "same", "\\u0000z",
+		// invalid UTF-8: json.Unmarshal makes each invalid byte U+FFFD
+		"\xff", "a\xc3\xa9\xc3", "\xed\xa0\x80 ", "us\xffer", "\\u00e9\xfe\\n"}
 )
 
 // randomGuardDocument is a random JSON document over the extractors' keys

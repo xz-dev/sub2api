@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"testing"
@@ -52,6 +53,40 @@ func TestBodySpoolGuardDecodeChargedOnFallbackPaths(t *testing.T) {
 	coveredOn, coveredOff := held("/v1/responses", on), held("/v1/responses", off)
 	require.Len(t, on.bodies, 1, "the guard read the covered body")
 	require.Equal(t, coveredOff, coveredOn, "covered: the k_skel envelope already holds the decode")
+}
+
+// TestBodySpoolGuardChargesInvalidUTF8 (review rr3 blocker 1): the guard
+// decodes each invalid UTF-8 byte to U+FFFD, so its copies of the kept text
+// grow; securityaudit.InvalidUTF8ChargeK per invalid byte is charged on top,
+// on a fallback path and inside a k_skel envelope alike.
+func TestBodySpoolGuardChargesInvalidUTF8(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
+	enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
+	meter := bodySpoolRuntimeFor(h.cfg).meter
+	valid := largeResponsesTextBody(256 << 10)
+	invalid := bytes.Clone(valid)
+	for i := 200; i < len(invalid)-16; i += 8 {
+		invalid[i] = 0xff
+	}
+	extra := int64(securityaudit.InvalidUTF8ChargeK * securityaudit.InvalidUTF8Bytes(invalid))
+	require.Greater(t, extra, int64(len(invalid)/2))
+	charged := func(path string, body []byte) int64 {
+		c, rec := newLargeBodyTestContext(path, body, "")
+		require.True(t, ingestRequestBody(c, h.cfg), rec.Body.String())
+		got, err := readPrereadBody(c)
+		require.NoError(t, err)
+		before := meter.Outstanding()
+		require.Nil(t, chargeGuardDecode(c, func() bool { return true }, got))
+		n := meter.Outstanding() - before
+		releaseRequestBodySpool(c)
+		require.Zero(t, meter.Outstanding())
+		return n
+	}
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		require.Equal(t, charged(path, valid)+extra, charged(path, invalid), path)
+	}
+	require.Zero(t, charged("/v1/responses", valid), "covered: the k_skel envelope holds the decode of valid text")
 }
 
 // asyncHoldEngine is an async prompt engine that keeps n bytes of the
