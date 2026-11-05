@@ -28,8 +28,10 @@ import (
 //   - Covered paths (bare /v1/responses, /responses, /backend-api/codex/
 //     responses of an OpenAI group) spool tier-A media and hand on the
 //     skeleton; inline bytes above S get 413.
-//   - Every other POST is a fallback path: above L it gets a 413 naming the
-//     path and L.
+//   - Every other POST, and every body with a Content-Encoding, is a
+//     fallback path: above L it gets a 413 naming the path and L. An
+//     encoded body is decoded as it streams; L and k_path apply to its
+//     decoded bytes.
 //   - The memory charge snapshots the working set before any byte is read
 //     and charges k x the real inline (or fallback) bytes in 4 KiB granules,
 //     each before its bytes are allocated, against that snapshot. Every
@@ -173,19 +175,27 @@ func BodySpoolIngest(cfg *config.Config) gin.HandlerFunc {
 type capacityRefusal struct {
 	status        int
 	code, message string
+	// limitBytes, when > 0, is sent as limit_bytes: the exceeded byte limit
+	// of a 413, or the bytes a memory 503 needed (design, visible to clients).
+	limitBytes int64
 }
 
 func writeCapacityRefusal(c *gin.Context, r *capacityRefusal) {
 	typ := "server_error"
-	if r.status == http.StatusRequestEntityTooLarge {
+	if r.status < http.StatusInternalServerError {
 		typ = "invalid_request_error"
 	}
 	service.MarkResponseCommitted(c)
-	c.AbortWithStatusJSON(r.status, gin.H{"error": gin.H{"type": typ, "code": r.code, "hop": bodySpoolHop, "message": r.message}})
+	body := gin.H{"type": typ, "code": r.code, "hop": bodySpoolHop, "message": r.message}
+	if r.limitBytes > 0 {
+		body["limit_bytes"] = r.limitBytes
+	}
+	c.AbortWithStatusJSON(r.status, gin.H{"error": body})
 }
 
-func tooLarge(format string, args ...any) *capacityRefusal {
-	return &capacityRefusal{http.StatusRequestEntityTooLarge, "request_too_large", bodySpoolHop + ": " + fmt.Sprintf(format, args...)}
+// tooLarge is the named 413 for a body above limit bytes.
+func tooLarge(limit int64, format string, args ...any) *capacityRefusal {
+	return &capacityRefusal{http.StatusRequestEntityTooLarge, "request_too_large", bodySpoolHop + ": " + fmt.Sprintf(format, args...), limit}
 }
 
 // refusalFor maps an ingest error to its explicit HTTP refusal.
@@ -196,26 +206,26 @@ func refusalFor(err error, inlineLimit int64) *capacityRefusal {
 	var maxErr *http.MaxBytesError
 	switch {
 	case errors.As(err, &lim):
-		return tooLarge("inline bytes exceed the %d-byte inline-bytes limit (media is spooled, text is not)", inlineLimit)
+		return tooLarge(inlineLimit, "inline bytes exceed the %d-byte inline-bytes limit (media is spooled, text is not)", inlineLimit)
 	case errors.As(err, &mem):
-		return &capacityRefusal{http.StatusServiceUnavailable, bodyspool.CodeInsufficientMemory, bodySpoolHop + ": " + mem.Error()}
+		return &capacityRefusal{http.StatusServiceUnavailable, bodyspool.CodeInsufficientMemory, bodySpoolHop + ": " + mem.Error(), mem.Need}
 	case errors.As(err, &tick):
-		return &capacityRefusal{http.StatusServiceUnavailable, tick.Code, bodySpoolHop + ": " + tick.Error()}
+		return &capacityRefusal{http.StatusServiceUnavailable, tick.Code, bodySpoolHop + ": " + tick.Error(), 0}
 	case errors.Is(err, bodyspool.ErrInsufficientStorage):
-		return &capacityRefusal{http.StatusInsufficientStorage, "insufficient_storage", bodySpoolHop + ": " + err.Error()}
+		return &capacityRefusal{http.StatusInsufficientStorage, "insufficient_storage", bodySpoolHop + ": " + err.Error(), 0}
 	case errors.Is(err, bodyspool.ErrMarkerCollision):
-		return &capacityRefusal{http.StatusInternalServerError, "marker_collision", bodySpoolHop + ": " + err.Error()}
+		return &capacityRefusal{http.StatusInternalServerError, "marker_collision", bodySpoolHop + ": " + err.Error(), 0}
 	case errors.As(err, &maxErr):
-		return tooLarge("body exceeds the %d-byte request limit", maxErr.Limit)
+		return tooLarge(maxErr.Limit, "body exceeds the %d-byte request limit", maxErr.Limit)
 	}
-	return &capacityRefusal{http.StatusBadRequest, "invalid_request_error", "Failed to read request body"}
+	return &capacityRefusal{http.StatusBadRequest, "invalid_request_error", "Failed to read request body", 0}
 }
 
 func isBodySpoolCoveredRequest(c *gin.Context) bool {
 	if !isBareOpenAIResponsesPath(c) {
 		return false
 	}
-	if enc := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Encoding"))); enc != "" && enc != "identity" {
+	if requestContentEncoding(c) != "" {
 		return false
 	}
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -244,12 +254,12 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		return true
 	}
 	if rt.err != nil {
-		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + rt.err.Error()})
+		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + rt.err.Error(), 0})
 		return false
 	}
 	charge, err := rt.meter.NewCharge() // before any byte of this request exists
 	if err != nil {
-		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + err.Error()})
+		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + err.Error(), 0})
 		return false
 	}
 	st := &bodySpoolState{charge: charge}
@@ -279,6 +289,10 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	}
 	covered := isBodySpoolCoveredRequest(c)
 	st.covered = covered
+	// A Content-Encoding body is never covered (isBodySpoolCoveredRequest);
+	// its Content-Length is the compressed size, so it is charged like a
+	// chunked body, on its decoded bytes (ingestFallbackBody).
+	encoding := requestContentEncoding(c)
 	limit, k := rt.cfg.FallbackLimit, rt.cfg.KPath
 	if covered {
 		limit, k = rt.cfg.InlineLimit, rt.cfg.KSkel
@@ -295,7 +309,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	case covered && size >= bodySpoolUpfrontMin:
 		prepaid = roundUpGranule(min(size, limit))
 		sizeHint = prepaid
-	case !covered && size >= 0 && size <= limit:
+	case !covered && encoding == "" && size >= 0 && size <= limit:
 		prepaid = max(prepaid, roundUpGranule(size+1)) // the reader's buffer is size+1
 	}
 	upfront += chargeBytes(k, prepaid)
@@ -307,15 +321,8 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	}
 
 	if !covered {
-		if size > limit {
-			return fail(tooLarge("%s is a fallback path; its limit is %d bytes and the body has %d", c.Request.URL.Path, limit, size))
-		}
-		c.Request.Body = &chargingReader{r: http.MaxBytesReader(c.Writer, c.Request.Body, limit), charge: st.charge, k: k, charged: prepaid}
-		if _, err := readPrereadBody(c); err != nil {
-			if errors.As(err, new(*http.MaxBytesError)) {
-				return fail(tooLarge("%s is a fallback path; its limit is %d bytes", c.Request.URL.Path, limit))
-			}
-			return fail(refusalFor(err, 0))
+		if r := ingestFallbackBody(c, rt, st, encoding, size, limit, k, prepaid); r != nil {
+			return fail(r)
 		}
 		return true
 	}
@@ -324,7 +331,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	var inlineSeen int64
 	f, err := rt.dir.Create()
 	if err != nil {
-		return fail(&capacityRefusal{http.StatusInternalServerError, "body_spool_unavailable", bodySpoolHop + ": " + err.Error()})
+		return fail(&capacityRefusal{http.StatusInternalServerError, "body_spool_unavailable", bodySpoolHop + ": " + err.Error(), 0})
 	}
 	st.file = f
 	sp, skel, err := bodyspool.Ingest(c.Request.Body, f, bodyspool.Options{
@@ -369,6 +376,62 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 		c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
 	}
 	return true
+}
+
+// requestContentEncoding is the lower-cased Content-Encoding, "" for none
+// or identity.
+func requestContentEncoding(c *gin.Context) string {
+	enc := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Encoding")))
+	if enc == "identity" {
+		return ""
+	}
+	return enc
+}
+
+// ingestFallbackBody reads a fallback body into memory, charging k x its
+// bytes before they are handed on, and refuses it above L. A body with a
+// Content-Encoding is decoded here, as it streams (review a4a7d843 blocker
+// 1): L and the charge apply to the decoded bytes, the compressed size
+// never counts, and the decoder's own state is charged before it exists.
+// The handlers then see the decoded body with no Content-Encoding.
+func ingestFallbackBody(c *gin.Context, rt *bodySpoolRuntime, st *bodySpoolState, encoding string, size, limit int64, k float64, prepaid int64) *capacityRefusal {
+	path := c.Request.URL.Path
+	src := c.Request.Body
+	decoded := ""
+	if encoding != "" {
+		dec, err := pkghttputil.NewRequestBodyDecoder(encoding, http.MaxBytesReader(c.Writer, c.Request.Body, rt.cap))
+		if err != nil {
+			return decodeRefusal(encoding, err)
+		}
+		defer func() { _ = dec.Close() }()
+		if err := st.charge.Add(dec.StateBytes); err != nil {
+			return refusalFor(err, 0)
+		}
+		c.Request.Header.Del("Content-Encoding")
+		c.Request.Header.Del("Content-Length")
+		c.Request.ContentLength = -1
+		src = dec
+		decoded = " after " + encoding + " decoding"
+	} else if size > limit {
+		return tooLarge(limit, "%s is a fallback path; its limit is %d bytes and the body has %d", path, limit, size)
+	}
+	c.Request.Body = &chargingReader{r: http.MaxBytesReader(c.Writer, src, limit), charge: st.charge, k: k, charged: prepaid}
+	if _, err := readPrereadBody(c); err != nil {
+		var maxErr *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxErr) && maxErr.Limit == limit:
+			return tooLarge(limit, "%s is a fallback path; its limit is %d bytes%s", path, limit, decoded)
+		case encoding != "" && !errors.As(err, &maxErr) && !errors.As(err, new(*bodyspool.InsufficientMemoryError)):
+			return decodeRefusal(encoding, err)
+		}
+		return refusalFor(err, 0)
+	}
+	return nil
+}
+
+// decodeRefusal: a Content-Encoding body that cannot be decoded.
+func decodeRefusal(encoding string, err error) *capacityRefusal {
+	return &capacityRefusal{http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("%s: decode Content-Encoding %q: %v", bodySpoolHop, encoding, err), 0}
 }
 
 func roundUpGranule(n int64) int64 {
@@ -446,7 +509,7 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 	}
 	if legacyModerates() {
 		return nil, &capacityRefusal{http.StatusUnprocessableEntity, codeSpooledMediaModerationUnsupported,
-			bodySpoolHop + ": content moderation is enabled for this request and cannot inspect spooled media (strings of 64 KiB or more); nothing was sent"}
+			bodySpoolHop + ": content moderation is enabled for this request and cannot inspect spooled media (strings of 64 KiB or more); nothing was sent", 0}
 	}
 	if !promptReads() {
 		return nil, nil
@@ -454,7 +517,7 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 	redacted, err := st.spool.Redact(body, st.charge.Add)
 	if err != nil {
 		if errors.Is(err, bodyspool.ErrMarkerUnresolved) {
-			return nil, &capacityRefusal{http.StatusInternalServerError, "marker_unresolved", bodySpoolHop + ": " + err.Error()}
+			return nil, &capacityRefusal{http.StatusInternalServerError, "marker_unresolved", bodySpoolHop + ": " + err.Error(), 0}
 		}
 		return nil, refusalFor(err, 0)
 	}
