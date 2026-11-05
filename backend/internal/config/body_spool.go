@@ -45,13 +45,15 @@ type GatewayBodySpoolConfig struct {
 
 // Body spool defaults.
 const (
-	DefaultBodySpoolInlineLimit         int64   = 16 << 20
-	DefaultBodySpoolTicketedInlineLimit int64   = 8 << 20
-	DefaultBodySpoolFallbackLimit       int64   = 16 << 20
-	DefaultBodySpoolKSkel               float64 = 15
-	DefaultBodySpoolKMem                float64 = 0.1
-	DefaultBodySpoolKPath               float64 = 17
-	DefaultBodySpoolPageCacheBound      int64   = 16 << 20
+	DefaultBodySpoolInlineLimit         int64 = 16 << 20
+	DefaultBodySpoolTicketedInlineLimit int64 = 8 << 20
+	DefaultBodySpoolFallbackLimit       int64 = 16 << 20
+	// Measured on the patched skeleton path: 10.7-13.1 at a 16 MiB text body
+	// in a 320m Sub2API (task 7.2 follow-up), rounded up with ~7 % margin.
+	DefaultBodySpoolKSkel          float64 = 14
+	DefaultBodySpoolKMem           float64 = 0.1
+	DefaultBodySpoolKPath          float64 = 17
+	DefaultBodySpoolPageCacheBound int64   = 16 << 20
 )
 
 // Effective returns c with zero values replaced by the defaults.

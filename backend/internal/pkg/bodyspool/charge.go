@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Per-hop memory charge (design D4): an atomic byte counter of what in-flight
@@ -39,7 +42,17 @@ func (e *InsufficientMemoryError) Error() string {
 type Meter struct {
 	max, cur    *os.File
 	outstanding atomic.Int64
+
+	// Reclaim returns freed heap to the OS (debug.FreeOSMemory). A first
+	// charge that does not fit calls it once and re-reads memory.current:
+	// garbage the GC has not yet returned is not memory in use.
+	Reclaim       func()
+	reclaimMu     sync.Mutex
+	lastReclaimed time.Time
 }
+
+// reclaimInterval rate-limits Reclaim across concurrent refusals.
+const reclaimInterval = time.Second
 
 // OpenMeter opens the cgroup v2 memory files in dir, or in the process's own
 // cgroup when dir is empty. A missing file or an unlimited memory.max is an
@@ -69,7 +82,7 @@ func OpenMeter(dir string) (*Meter, error) {
 		_ = mx.Close()
 		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
 	}
-	m := &Meter{max: mx, cur: cur}
+	m := &Meter{max: mx, cur: cur, Reclaim: debug.FreeOSMemory}
 	if _, _, err := m.read(); err != nil {
 		_ = mx.Close()
 		_ = cur.Close()
@@ -128,6 +141,32 @@ func (m *Meter) NewCharge() (*Charge, error) {
 // snapshot from NewCharge and outstanding includes this charge, so the
 // request's own bytes count once. The check and the add are one CAS.
 func (c *Charge) Add(step int64) error {
+	err := c.add(step)
+	var ime *InsufficientMemoryError
+	if !errors.As(err, &ime) || c.n.Load() != 0 || c.m.Reclaim == nil {
+		return err
+	}
+	// Nothing of this request is charged or allocated yet, so a fresh
+	// snapshot after reclaiming still excludes its own bytes.
+	c.m.reclaim()
+	limit, current, rerr := c.m.read()
+	if rerr != nil {
+		return rerr
+	}
+	c.limit, c.base = limit, current
+	return c.add(step)
+}
+
+func (m *Meter) reclaim() {
+	m.reclaimMu.Lock()
+	defer m.reclaimMu.Unlock()
+	if time.Since(m.lastReclaimed) >= reclaimInterval {
+		m.Reclaim()
+		m.lastReclaimed = time.Now()
+	}
+}
+
+func (c *Charge) add(step int64) error {
 	if step <= 0 {
 		return nil
 	}

@@ -36,6 +36,13 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return nil, fmt.Errorf("parse responses request: %w", err)
 	}
+	// Read the input from body instead of the decoder's body-sized copy when
+	// the bytes are identical, so that copy is garbage before the conversion.
+	if in := parseRawJSONView(body).Get("input"); in.Index > 0 && in.Index+len(in.Raw) <= len(body) {
+		if view := body[in.Index : in.Index+len(in.Raw) : in.Index+len(in.Raw)]; bytes.Equal(view, responsesReq.Input) {
+			responsesReq.Input = view
+		}
+	}
 	originalModel := strings.TrimSpace(responsesReq.Model)
 	if originalModel == "" {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
@@ -63,7 +70,11 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 	chatReq, err := apicompat.ResponsesToChatCompletionsRequestWithOptions(&responsesReq, &apicompat.ResponsesToChatOptions{
 		ReasoningContentByID: s.reasoningContentByID,
+		EffectiveTools:       &effectiveTools,
 	})
+	// The converted messages hold what is still needed; drop the raw input so
+	// a body-sized copy is not live while the chat body is marshalled.
+	responsesReq.Input = nil
 	if err != nil {
 		writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
