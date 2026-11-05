@@ -187,7 +187,7 @@ func writeCapacityRefusal(c *gin.Context, r *capacityRefusal) {
 	}
 	service.MarkResponseCommitted(c)
 	body := gin.H{"type": typ, "code": r.code, "hop": bodySpoolHop, "message": r.message}
-	if r.limitBytes > 0 {
+	if r.limitBytes > 0 || r.status == http.StatusRequestEntityTooLarge {
 		body["limit_bytes"] = r.limitBytes
 	}
 	c.AbortWithStatusJSON(r.status, gin.H{"error": body})

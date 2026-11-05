@@ -109,6 +109,9 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		}},
 	})
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, searchModel, auditBody); decision != nil && !decision.AllowNextStage {
+		if writeBodySpoolAuditRefusal(c) { // capacity refusals carry code, hop and limit_bytes
+			return
+		}
 		status := decision.HTTPStatus
 		if status == 0 {
 			status = http.StatusForbidden
