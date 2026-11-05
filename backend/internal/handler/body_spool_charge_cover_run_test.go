@@ -18,6 +18,10 @@ type coverUpstream struct {
 	calls     atomic.Int32
 	forwarded atomic.Int64
 	lastPath  atomic.Value // string: the last upstream URL path
+	// rejectEncrypted > 0: the next Responses sends get a 400
+	// invalid_encrypted_content (one per count), as for a replayed item the
+	// upstream cannot decrypt.
+	rejectEncrypted atomic.Int32
 }
 
 // streamScan discards what it is given and notes whether `"stream":true`
@@ -46,6 +50,16 @@ func (u *coverUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.R
 	}
 	path := req.URL.Path
 	u.lastPath.Store(path)
+	if strings.HasSuffix(path, "/responses") && u.rejectEncrypted.Load() > 0 {
+		u.rejectEncrypted.Add(-1)
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","code":"invalid_encrypted_content",` +
+				`"message":"The encrypted content could not be verified."}}`)),
+			Request: req,
+		}, nil
+	}
 	if scan.stream && strings.HasSuffix(path, "/messages") { // Anthropic stream
 		return coverSSE(req, `event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":10,"output_tokens":0}}}`,
 			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,

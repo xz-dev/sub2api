@@ -146,10 +146,15 @@ func coverBody(p coverProto, s coverBase, size int, model, root, item string) []
 
 // coverMods are the shapes that make a normalizer or rewrite act, on the
 // tiny base; proto names the protocol each applies to. codex sends a Codex
-// client with the image-generation bridge on and images allowed.
+// client with the image-generation bridge on and images allowed. header is
+// sent with the request (and with the priming request). prime names the
+// per-session state set up first with a small request of the same shape
+// and session (see coverPrimes).
 var coverMods = []struct {
 	proto, name, root, item, model string
 	codex                          bool
+	header                         map[string]string
+	prime                          string
 }{
 	{proto: "responses", name: "compaction_trigger", item: `{"type":"compaction_trigger"}`},
 	{proto: "responses", name: "dupkey", root: `"store":false,`},
@@ -157,6 +162,18 @@ var coverMods = []struct {
 	{proto: "responses", name: "json_schema", root: `"text":{"format":{"type":"json_schema","name":"r","schema":{"type":"object","properties":{}}}},`},
 	{proto: "responses", name: "image_generation", root: `"tools":[{"type":"image_generation","output_format":"png"}],`, codex: true},
 	{proto: "responses", name: "gpt-image", model: "gpt-image-1"},
+	// Handler Codex bootstrap normalizers (an automation candidate is
+	// rewritten; any codex_tui item is decoded).
+	{proto: "responses", name: "codex_app", item: `{"type":"function_call_output","namespace":"codex_app","name":"automation_update","output":"<heartbeat><automation_id>wiki</automation_id></heartbeat>"}`},
+	{proto: "responses", name: "codex_tui", item: `{"type":"message","role":"user","namespace":"codex_tui","content":"x"}`},
+	// Responses-Lite: any client may send the header.
+	{proto: "responses", name: "responses_lite", header: map[string]string{"X-OpenAI-Internal-Codex-Responses-Lite": "true"}},
+	// A session an earlier invalid_encrypted_content retry marked, whose
+	// next request still carries the rejected item.
+	{proto: "responses", name: "encrypted_lineage", item: `{"type":"reasoning","summary":[],"encrypted_content":"enc-cover-rejected"}`,
+		header: map[string]string{"session_id": "cover-lineage-session"}, prime: "invalid_encrypted_content"},
+	// A namespace tool declaration (OAuth flattens it).
+	{proto: "responses", name: "namespace_tools", root: `"tools":[{"type":"namespace","name":"ns","description":"d","tools":[{"type":"function","name":"f","description":"d","parameters":{"type":"object","properties":{}}}]}],`},
 	{proto: "chat", name: "dupkey", root: `"stream":false,`},
 	{proto: "chat", name: "parallel_tool_calls", root: `"parallel_tool_calls":true,`},
 	{proto: "chat", name: "json_schema", root: `"response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object","properties":{}}}},`},

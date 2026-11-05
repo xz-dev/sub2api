@@ -138,7 +138,7 @@ type coverServer struct {
 
 // runCoverCase serves body once. The meter must be empty before: the
 // previous request released everything it charged.
-func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex bool) coverResult {
+func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex bool, header map[string]string) coverResult {
 	t.Helper()
 	charged := requestChargedBytes(srv.cfg)
 	assert.Zero(t, charged(), "a charge outlived its request")
@@ -147,6 +147,9 @@ func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex
 	req.Header.Set("Content-Type", "application/json")
 	if codex {
 		req.Header.Set("originator", "codex_cli_rs")
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	calls := srv.up.calls.Load()
@@ -169,7 +172,8 @@ func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex
 // the case did not exercise its route and fails.
 //
 // Slow and not meaningful under -race: set SUB2API_CHARGE_COVER=1.
-// SUB2API_CHARGE_COVER_ONLY=<substring> runs the cases whose name has it.
+// SUB2API_CHARGE_COVER_ONLY=<a|b|...> runs the cases whose name has one of
+// the substrings.
 func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 	if os.Getenv("SUB2API_CHARGE_COVER") == "" {
 		t.Skip("set SUB2API_CHARGE_COVER=1 to run the charge-covers-allocation property test")
@@ -181,9 +185,11 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 	for _, cb := range append(append([]coverCombo{coverHarnessCombo()}, coverOpenAICombos()...), coverGatewayCombos()...) {
 		prefix := cb.route + "/" + cb.account + "/"
 		type shape struct {
-			name  string
-			body  func(size int) []byte
-			codex bool
+			name   string
+			body   func(size int) []byte
+			codex  bool
+			header map[string]string
+			prime  string
 		}
 		var shapes []shape
 		p := coverProtos[cb.proto]
@@ -201,7 +207,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 			if m.model != "" {
 				model = m.model
 			}
-			shapes = append(shapes, shape{name: m.name, codex: m.codex, body: func(n int) []byte {
+			shapes = append(shapes, shape{name: m.name, codex: m.codex, header: m.header, prime: m.prime, body: func(n int) []byte {
 				return coverBody(p, coverBases[0], n, model, m.root, m.item)
 			}})
 		}
@@ -217,18 +223,21 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 			}
 			for _, size := range sz {
 				name := prefix + sh.name + "/" + coverSize(size)
-				if only != "" && !strings.Contains(name, only) {
+				if !coverSelected(name, only) {
 					continue
 				}
 				if srv == nil { // built on the parent t; one unmeasured request warms it
 					h, cfg, up := cb.setup(t)
 					srv = &coverServer{h: h, cfg: cfg, up: up}
-					runCoverCase(t, *srv, cb.path, coverBody(p, coverBases[0], 64<<10, cb.model, "", ""), false)
+					runCoverCase(t, *srv, cb.path, coverBody(p, coverBases[0], 64<<10, cb.model, "", ""), false, nil)
 				}
 				cases++
 				t.Run(name, func(t *testing.T) {
+					if sh.prime != "" {
+						coverPrimes[sh.prime](t, *srv, cb.path, sh.body(64<<10), sh.header)
+					}
 					body := sh.body(size)
-					r := runCoverCase(t, *srv, cb.path, body, sh.codex)
+					r := runCoverCase(t, *srv, cb.path, body, sh.codex, sh.header)
 					t.Logf("COVER %s status %d calls %d bytes %d peak_heap %d peak_charge %d excess %d samples %d",
 						name, r.status, r.calls, r.bytes, r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
 					if r.reply != "" {
@@ -267,6 +276,35 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 	for _, n := range notExercised {
 		t.Logf("COVER not-exercised %s", n)
 	}
+}
+
+// coverSelected: only is empty or one of its "|"-separated substrings is
+// in name.
+func coverSelected(name, only string) bool {
+	if only == "" {
+		return true
+	}
+	for _, part := range strings.Split(only, "|") {
+		if part != "" && strings.Contains(name, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// coverPrimes set up per-session state before a case: each sends body (the
+// case's shape at 64 KiB, with its session header) once, unmeasured.
+var coverPrimes = map[string]func(t *testing.T, srv coverServer, path string, body []byte, header map[string]string){
+	// The upstream rejects the first send with invalid_encrypted_content;
+	// Forward retries without the encrypted item and marks the session's
+	// lineage with its digest (openai_gateway_forward.go retry). The case
+	// then sends the same item again in that session.
+	"invalid_encrypted_content": func(t *testing.T, srv coverServer, path string, body []byte, header map[string]string) {
+		srv.up.rejectEncrypted.Store(1)
+		r := runCoverCase(t, srv, path, body, false, header)
+		srv.up.rejectEncrypted.Store(0)
+		t.Logf("COVER prime invalid_encrypted_content status %d calls %d", r.status, r.calls)
+	},
 }
 
 // chargeCoverAllowance is what the heap may exceed the charge by for
