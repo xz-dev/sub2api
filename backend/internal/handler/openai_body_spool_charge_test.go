@@ -4,6 +4,7 @@ package handler
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,9 +34,14 @@ func trackCgroup(t *testing.T, h *OpenAIGatewayHandler, env spoolTestEnv) (stop 
 	t.Helper()
 	rt := bodySpoolRuntimeFor(h.cfg)
 	require.NoError(t, rt.err)
+	// Overwrite in place at a fixed width, never truncate: the meter keeps
+	// memory.current open and reads it with ReadAt, and a read between
+	// os.WriteFile's truncate and write saw "" (500 body_spool_misconfigured).
+	cur, err := os.OpenFile(filepath.Join(env.cgroup, "memory.current"), os.O_WRONLY, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cur.Close() })
 	write := func() {
-		v := strconv.FormatInt(chargeTestIdle+rt.meter.Outstanding(), 10)
-		_ = os.WriteFile(filepath.Join(env.cgroup, "memory.current"), []byte(v+"\n"), 0o600)
+		_, _ = cur.WriteAt([]byte(fmt.Sprintf("%-20d\n", chargeTestIdle+rt.meter.Outstanding())), 0)
 	}
 	write()
 	done, exited := make(chan struct{}), make(chan struct{})
@@ -127,7 +133,7 @@ func TestOpenAIResponsesConcurrentTextBodies16MiB(t *testing.T) {
 	// The released bytes leave the fake cgroup on the next tracker tick.
 	require.Eventually(t, func() bool {
 		b, _ := os.ReadFile(filepath.Join(env.cgroup, "memory.current"))
-		return string(b) == strconv.Itoa(chargeTestIdle)+"\n"
+		return string(bytes.TrimSpace(b)) == strconv.Itoa(chargeTestIdle)
 	}, time.Second, time.Millisecond)
 
 	c3, rec3 := newLargeBodyTestContext("/v1/responses", body, "")
