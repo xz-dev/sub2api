@@ -35,9 +35,12 @@ const (
 	// Huffman tables): measured 50 KiB.
 	requestFlateState = 64 << 10
 	requestPeekBuffer = 4 << 10
+	// requestPeekState bounds the peek buffer, its reader and the first
+	// frame header parse: measured 7.1 KiB.
+	requestPeekState = 8 << 10
 
 	// MaxRequestBodyDecoderState is the largest StateBytes of any decoder.
-	MaxRequestBodyDecoderState = MaxRequestZstdWindow + requestZstdBlockState + requestFlateState + requestPeekBuffer
+	MaxRequestBodyDecoderState = MaxRequestZstdWindow + requestZstdBlockState + requestFlateState + requestPeekState
 )
 
 // ErrRequestZstdWindow: a zstd request body declares a window above
@@ -56,7 +59,12 @@ type RequestBodyDecoder struct {
 
 func (d *RequestBodyDecoder) Read(p []byte) (int, error) {
 	n, err := d.r.Read(p)
-	if errors.Is(err, zstd.ErrWindowSizeExceeded) {
+	// A later frame whose window, or single-segment size, is above the
+	// first frame's: klauspost reports ErrWindowSizeExceeded or
+	// ErrDecoderSizeExceeded (its decoded-size limit, 64 GiB by default, is
+	// never reached by a request body). Both are the named window error
+	// (review rr3 minor).
+	if errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrDecoderSizeExceeded) {
 		err = fmt.Errorf("%w: %w", ErrRequestZstdWindow, err)
 	}
 	return n, err
@@ -76,26 +84,46 @@ func (d *RequestBodyDecoder) Close() error {
 // reads the first frame header to size the decoder's state, and limits every
 // frame's window to that size.
 func NewRequestBodyDecoder(encoding string, r io.Reader) (*RequestBodyDecoder, error) {
+	return NewChargedRequestBodyDecoder(encoding, r, func(int64) error { return nil })
+}
+
+// NewChargedRequestBodyDecoder is NewRequestBodyDecoder that calls charge
+// with the decoder's state bytes before it allocates them (for zstd, the
+// peek buffer first, then the rest once the first frame header is read),
+// and returns charge's error unchanged. In total it charges StateBytes.
+func NewChargedRequestBodyDecoder(encoding string, r io.Reader, charge func(int64) error) (*RequestBodyDecoder, error) {
 	switch encoding {
 	case "zstd":
+		if err := charge(requestPeekState); err != nil {
+			return nil, err
+		}
 		br := bufio.NewReaderSize(r, requestPeekBuffer)
 		window, err := firstZstdWindow(br)
 		if err != nil {
+			return nil, err
+		}
+		state := window + min(2*window, requestZstdBlockState) + requestFlateState
+		if err := charge(state); err != nil {
 			return nil, err
 		}
 		dec, err := zstd.NewReader(br, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true), zstd.WithDecoderMaxWindow(uint64(window)))
 		if err != nil {
 			return nil, err
 		}
-		state := window + min(2*window, requestZstdBlockState) + requestFlateState + requestPeekBuffer
-		return &RequestBodyDecoder{r: dec, close: dec.Close, StateBytes: state}, nil
+		return &RequestBodyDecoder{r: dec, close: dec.Close, StateBytes: state + requestPeekState}, nil
 	case "gzip", "x-gzip":
+		if err := charge(requestFlateState); err != nil {
+			return nil, err
+		}
 		gr, err := gzip.NewReader(r)
 		if err != nil {
 			return nil, err
 		}
 		return &RequestBodyDecoder{r: gr, close: func() { _ = gr.Close() }, StateBytes: requestFlateState}, nil
 	case "deflate":
+		if err := charge(requestFlateState); err != nil {
+			return nil, err
+		}
 		zr, err := zlib.NewReader(r)
 		if err != nil {
 			return nil, err

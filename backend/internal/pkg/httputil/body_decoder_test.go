@@ -3,6 +3,7 @@ package httputil
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -62,6 +63,50 @@ func TestRequestBodyDecoderStateBound(t *testing.T) {
 	}
 }
 
+// TestChargedRequestBodyDecoderChargesFirst (review rr3 nit): the state is
+// charged before the decoder allocates it, StateBytes in total, and a
+// refused charge allocates no decoder and returns the charge's error.
+func TestChargedRequestBodyDecoderChargesFirst(t *testing.T) {
+	plain := bytes.Repeat([]byte("0123456789abcdef"), 1<<16)
+	var gz, zl bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	_, _ = gw.Write(plain)
+	require.NoError(t, gw.Close())
+	zw := zlib.NewWriter(&zl)
+	_, _ = zw.Write(plain)
+	require.NoError(t, zw.Close())
+	refused := errors.New("refused")
+	for enc, body := range map[string][]byte{"gzip": gz.Bytes(), "deflate": zl.Bytes(), "zstd": zstdFrame(t, plain, 1<<20)} {
+		var ms runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&ms)
+		start := ms.TotalAlloc
+		var charged int64
+		d, err := NewChargedRequestBodyDecoder(enc, bytes.NewReader(body), func(n int64) error {
+			// At each charge, what is allocated so far was charged already.
+			runtime.ReadMemStats(&ms)
+			require.LessOrEqual(t, int64(ms.TotalAlloc-start), charged+1024, "%s: allocated before its charge", enc)
+			charged += n
+			return nil
+		})
+		require.NoError(t, err, enc)
+		require.Equal(t, d.StateBytes, charged, enc)
+		got, err := io.ReadAll(d)
+		require.NoError(t, err, enc)
+		require.Equal(t, plain, got, enc)
+		_ = d.Close()
+
+		runtime.GC()
+		runtime.ReadMemStats(&ms)
+		start = ms.TotalAlloc
+		d, err = NewChargedRequestBodyDecoder(enc, bytes.NewReader(body), func(int64) error { return refused })
+		runtime.ReadMemStats(&ms)
+		require.ErrorIs(t, err, refused, enc)
+		require.Nil(t, d, enc)
+		require.Less(t, ms.TotalAlloc-start, uint64(1024), "%s: a refused charge allocates no decoder", enc)
+	}
+}
+
 // TestRequestBodyDecoderZstdWindow: a first frame above RFC 9659's 8 MiB is
 // refused before any decoder state exists; a later frame may not need a
 // larger window than the one charged from the first frame.
@@ -73,6 +118,21 @@ func TestRequestBodyDecoderZstdWindow(t *testing.T) {
 	small := zstdFrame(t, plain[:1<<10], 8<<20) // single segment, 1 KiB
 	body := append(append([]byte(nil), small...), zstdFrame(t, plain, 8<<20)...)
 	d, err := NewRequestBodyDecoder("zstd", bytes.NewReader(body))
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, d)
+	require.True(t, errors.Is(err, ErrRequestZstdWindow), "got %v", err)
+
+	// A later single-segment frame (EncodeAll writes its content size, no
+	// window) larger than the charged window: the same named error, not
+	// klauspost's "decompressed size exceeds configured limit" (review rr3).
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
+	require.NoError(t, err)
+	later := enc.EncodeAll(plain[:4<<20], nil)
+	var h zstd.Header
+	require.NoError(t, h.Decode(later))
+	require.True(t, h.SingleSegment)
+	body = append(enc.EncodeAll(plain[:1<<10], nil), later...)
+	d, err = NewRequestBodyDecoder("zstd", bytes.NewReader(body))
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, d)
 	require.True(t, errors.Is(err, ErrRequestZstdWindow), "got %v", err)
