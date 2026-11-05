@@ -524,12 +524,20 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 	return redacted, nil
 }
 
-// guardDecodeK bounds the prompt guard's snapshot decode (json.Unmarshal of
-// the whole body into any, then the segments and scan text) as a multiple of
-// the body size. Measured in-process with GC off (allocated bytes / body
-// bytes, an upper bound of the decode's peak) over the large-request corpus:
-// 2.35 (D10 text-16), 2.30 (D10 text-32), 1.24 (M0 text-16), 1.31 (text-8).
-const guardDecodeK = 3.0
+// guardDecodeK and guardFixedBytes bound the prompt guard's work on the
+// request goroutine (json.Unmarshal of the whole body into any, the segments,
+// the scan text, the preview head and the stored prompt, and in blocking mode
+// the chunks): guardDecodeK × body + guardFixedBytes. Measured in-process with
+// GC off (allocated bytes, an upper bound of the peak) after review a4a7d843
+// removed the guard's text copies: 2.98 × on the text-heavy corpus
+// (d10-utext-16, 86 % of the body is text the guard reads), at most 3.12 × on
+// 16 MiB of message text, 2.31 × (D10 text-16), 1.24 × (M0 text-16); plus
+// about 0.33 MiB at any size, for the 16 KiB preview head and the stored
+// prompt (at most 65,536 runes). Before the fix the text corpus took 22-28 ×.
+const (
+	guardDecodeK    = 3.5
+	guardFixedBytes = 512 << 10
+)
 
 // chargeGuardDecode charges the prompt guard's decode before it allocates,
 // when the guard reads this request's body and the request has no k_skel
@@ -545,7 +553,7 @@ func chargeGuardDecode(c *gin.Context, promptReads func() bool, body []byte) *ca
 	if st.released || st.covered || !promptReads() {
 		return nil
 	}
-	if err := st.charge.Add(chargeBytes(guardDecodeK, roundUpGranule(int64(len(body))))); err != nil {
+	if err := st.charge.Add(chargeBytes(guardDecodeK, roundUpGranule(int64(len(body)))) + guardFixedBytes); err != nil {
 		return refusalFor(err, 0)
 	}
 	return nil

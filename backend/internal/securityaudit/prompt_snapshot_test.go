@@ -73,13 +73,14 @@ func TestBuildFullPromptStripsNULAndTruncates(t *testing.T) {
 }
 
 func TestFullPromptFromScanTextRestoresMultiSegmentLayout(t *testing.T) {
-	scanText, metadataText := buildPrioritizedScanText([]string{"latest user", "system policy", "earlier user"})
+	segments := []string{"latest user", "system policy", "earlier user"}
+	scanText := buildPrioritizedScanText(segments, 1)
 	require.Contains(t, scanText, promptAuditPrioritySeparator)
-	require.Equal(t, metadataText, FullPromptFromScanText(scanText))
+	require.Equal(t, strings.Join(segments, "\n\n"), FullPromptFromScanText(scanText))
 
-	singleScan, singleMeta := buildPrioritizedScanText([]string{"only"})
+	singleScan := buildPrioritizedScanText([]string{"only"}, 1)
 	require.NotContains(t, singleScan, promptAuditPrioritySeparator)
-	require.Equal(t, singleMeta, FullPromptFromScanText(singleScan))
+	require.Equal(t, "only", FullPromptFromScanText(singleScan))
 }
 
 func TestSplitRunesDoesNotSplitUTF8(t *testing.T) {
