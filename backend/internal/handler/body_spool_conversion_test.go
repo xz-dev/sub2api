@@ -81,6 +81,9 @@ func TestBodySpoolConvertedRequestRefusalIsFinal(t *testing.T) {
 	sConv := conversionLimit(cfg, 320<<20, true, false)
 	t.Logf("S_conv at 320m = %d B (%.2f MiB), k_conv %.1f", sConv, float64(sConv)/(1<<20), cfg.KConv)
 	require.Less(t, sConv, cfg.InlineLimit)
+	require.EqualValues(t, 30, cfg.KConv)
+	require.EqualValues(t, 8359936, sConv, "S_conv at 320m with k_conv 30 (7.97 MiB)")
+	require.EqualValues(t, 7172096, conversionLimit(cfg, 320<<20, false, false), "L_conv at 320m with k_conv 30")
 
 	above := largeResponsesTextBody(int(sConv) + 1<<20)
 	upstream, code, e := run("apikey_chat", above, 0)
