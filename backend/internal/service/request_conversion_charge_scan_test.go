@@ -35,6 +35,11 @@ type chargeScanSite struct {
 	pos    token.Pos
 	chain  []chargeScanBlock
 	inCond bool // in the Init or Cond of the innermost statement, an if
+	// conditional: the call may not run when its statement does: it is the
+	// right operand of && or || (if cond && ChargeRequestConversion(c) != nil).
+	// Such a charge dominates nothing. (A charge in a func literal already
+	// dominates nothing outside it: its block is not on their chain.)
+	conditional bool
 }
 
 type chargeScanBlock struct {
@@ -53,6 +58,9 @@ type chargeScanCall struct {
 // the if statement that holds c). A charge in another branch, or in a block
 // c is not in (a dead branch), does not dominate.
 func (s chargeScanSite) dominates(c chargeScanSite) bool {
+	if s.conditional {
+		return false
+	}
 	in := s.chain[len(s.chain)-1]
 	for _, b := range c.chain {
 		if b.block == in.block {
@@ -64,6 +72,11 @@ func (s chargeScanSite) dominates(c chargeScanSite) bool {
 
 func chargeScanSiteOf(stack []ast.Node, pos token.Pos) chargeScanSite {
 	site := chargeScanSite{pos: pos}
+	for i := 0; i+1 < len(stack); i++ {
+		if n, ok := stack[i].(*ast.BinaryExpr); ok && (n.Op == token.LAND || n.Op == token.LOR) && ast.Node(n.Y) == stack[i+1] {
+			site.conditional = true
+		}
+	}
 	for i := 0; i+1 < len(stack); i++ {
 		var list []ast.Stmt
 		switch b := stack[i].(type) {
