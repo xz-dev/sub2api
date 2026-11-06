@@ -1,8 +1,10 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -44,6 +46,49 @@ func openAICompatAnthropicDigestNamespace(account *Account, cAPIKeyID int64) str
 	return fmt.Sprintf("%d|%d|", account.ID, cAPIKeyID)
 }
 
+// openAICompatAnthropicDigestKey is the session-map key of one digest
+// chain prefix: a SHA-256 chain over the namespace and the chain's parts
+// (key_0 = H(ns), key_i = H(key_i-1 || part_i)). Every prefix's key comes
+// from the one before it, so finding the longest bound prefix is linear in
+// the chain (review rr10: ns + chain per prefix was quadratic, 1.7 TB
+// allocated for a 16 MiB /v1/messages body of tiny messages), and the map
+// holds 32 bytes per binding instead of the whole chain.
+type openAICompatAnthropicDigestKey [sha256.Size]byte
+
+// forEachOpenAICompatAnthropicDigestPrefix calls fn with the key of each
+// prefix of chain that ends at a part boundary, shortest first, and the
+// prefix's length; it stops when fn returns false.
+func forEachOpenAICompatAnthropicDigestPrefix(ns, chain string, fn func(key openAICompatAnthropicDigestKey, end int) bool) {
+	h := sha256.New()
+	var key openAICompatAnthropicDigestKey
+	_, _ = io.WriteString(h, ns)
+	h.Sum(key[:0])
+	for start := 0; start <= len(chain); {
+		end := strings.IndexByte(chain[start:], '-')
+		if end < 0 {
+			end = len(chain)
+		} else {
+			end += start
+		}
+		h.Reset()
+		_, _ = h.Write(key[:])
+		_, _ = io.WriteString(h, chain[start:end])
+		h.Sum(key[:0])
+		if !fn(key, end) {
+			return
+		}
+		start = end + 1
+	}
+}
+
+func openAICompatAnthropicDigestChainKey(ns, chain string) (key openAICompatAnthropicDigestKey) {
+	forEachOpenAICompatAnthropicDigestPrefix(ns, chain, func(k openAICompatAnthropicDigestKey, _ int) bool {
+		key = k
+		return true
+	})
+	return key
+}
+
 func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cAPIKeyID int64, digestChain string) (promptCacheKey string, matchedChain string) {
 	if s == nil || digestChain == "" {
 		return "", ""
@@ -52,24 +97,26 @@ func (s *OpenAIGatewayService) findOpenAICompatAnthropicDigestPromptCacheKey(acc
 	if ns == "" {
 		return "", ""
 	}
-	chain := digestChain
-	for {
-		if raw, ok := s.openaiCompatAnthropicDigestSessions.Load(ns + chain); ok {
-			if binding, ok := raw.(openAICompatAnthropicDigestBinding); ok {
-				if binding.ExpiresAt.IsZero() || time.Now().Before(binding.ExpiresAt) {
-					if key := strings.TrimSpace(binding.PromptCacheKey); key != "" {
-						return key, chain
-					}
+	// The longest prefix with a live binding wins; expired bindings met on
+	// the way are deleted.
+	now := time.Now()
+	forEachOpenAICompatAnthropicDigestPrefix(ns, digestChain, func(key openAICompatAnthropicDigestKey, end int) bool {
+		raw, ok := s.openaiCompatAnthropicDigestSessions.Load(key)
+		if !ok {
+			return true
+		}
+		if binding, ok := raw.(openAICompatAnthropicDigestBinding); ok {
+			if binding.ExpiresAt.IsZero() || now.Before(binding.ExpiresAt) {
+				if k := strings.TrimSpace(binding.PromptCacheKey); k != "" {
+					promptCacheKey, matchedChain = k, digestChain[:end]
+					return true
 				}
 			}
-			s.openaiCompatAnthropicDigestSessions.Delete(ns + chain)
 		}
-		i := strings.LastIndex(chain, "-")
-		if i < 0 {
-			return "", ""
-		}
-		chain = chain[:i]
-	}
+		s.openaiCompatAnthropicDigestSessions.Delete(key)
+		return true
+	})
+	return promptCacheKey, matchedChain
 }
 
 func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(account *Account, cAPIKeyID int64, digestChain, promptCacheKey, oldDigestChain string) {
@@ -84,9 +131,9 @@ func (s *OpenAIGatewayService) bindOpenAICompatAnthropicDigestPromptCacheKey(acc
 		PromptCacheKey: strings.TrimSpace(promptCacheKey),
 		ExpiresAt:      time.Now().Add(s.openAIWSResponseStickyTTL()),
 	}
-	s.openaiCompatAnthropicDigestSessions.Store(ns+digestChain, binding)
+	s.openaiCompatAnthropicDigestSessions.Store(openAICompatAnthropicDigestChainKey(ns, digestChain), binding)
 	if oldDigestChain != "" && oldDigestChain != digestChain {
-		s.openaiCompatAnthropicDigestSessions.Delete(ns + oldDigestChain)
+		s.openaiCompatAnthropicDigestSessions.Delete(openAICompatAnthropicDigestChainKey(ns, oldDigestChain))
 	}
 }
 

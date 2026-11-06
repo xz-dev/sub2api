@@ -101,7 +101,9 @@ func TestBodySpoolClientShapesRawPath(t *testing.T) {
 			chargeK := float64(r.PeakCharge) / float64(r.bytes)
 			t.Logf("CLIENT %s listed=%v reason=%q status=%d calls=%d bytes=%d k=%.2f charge_k=%.2f live_k=%.2f excess=%d unchanged=%v",
 				cl.name, listed, reason, r.status, r.calls, r.bytes, k, chargeK, float64(r.PeakHeap)/float64(r.bytes), r.Excess, unchanged)
-			assertChargeCovers(t, r.chargeCoverReading)
+			mode := coverAssertMode(r, bodySpoolRuntimeFor(srv.cfg).cfg.KConv)
+			t.Logf("CLIENT %s mode %s", cl.name, mode)
+			assertChargeCoversMode(t, r.chargeCoverReading, mode)
 			why, off := coverClientsOffList[cl.name]
 			if off {
 				assert.False(t, listed, "%s is on the list now; drop it from coverClientsOffList (%s)", cl.name, why)
