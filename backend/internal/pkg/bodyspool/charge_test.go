@@ -138,7 +138,9 @@ func TestChargeRefusesBeforeCrossingMargin(t *testing.T) {
 	err = b.Add(32 * mib) // 31 < 32
 	var ime *InsufficientMemoryError
 	require.ErrorAs(t, err, &ime)
-	require.EqualValues(t, 32*mib, ime.Need)
+	require.EqualValues(t, 44*mib, ime.Need, "the request's need: 12 MiB charged + the refused 32 MiB step")
+	require.EqualValues(t, 12*mib, ime.Charged)
+	require.EqualValues(t, 32*mib, ime.Step)
 	require.EqualValues(t, 31*mib, ime.Free)
 	require.EqualValues(t, 212*mib, m.Outstanding())
 

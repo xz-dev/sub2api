@@ -36,12 +36,25 @@ const ChargeMargin int64 = 32 << 20
 const CodeInsufficientMemory = "insufficient_memory"
 
 // InsufficientMemoryError: the step does not fit the cgroup headroom.
+//
+// Need is the bytes the request needs, the 503's limit_bytes (design: "the
+// bytes the request needed for a memory 503"): what the request had charged
+// when the step was refused plus the refused step. A charge taken whole
+// before reading (a Content-Length body, a top-up of known size) has nothing
+// charged yet or adds the rest of a known need, so Need is the full need. A
+// body charged as its bytes arrive (chunked, or Content-Encoding) has an
+// unknown total, so Need is a lower bound: the bytes it needed up to the
+// refused step.
 type InsufficientMemoryError struct {
-	Need, Free int64
+	Need int64 // Charged + Step
+	// Charged is what the request held when Step was refused.
+	Charged int64
+	// Step is the refused charge; Free is the headroom it did not fit.
+	Step, Free int64
 }
 
 func (e *InsufficientMemoryError) Error() string {
-	return fmt.Sprintf("insufficient memory: %d bytes are needed and %d are free in the cgroup after outstanding charges and the %d-byte margin", e.Need, e.Free, ChargeMargin)
+	return fmt.Sprintf("insufficient memory: the request needs at least %d bytes (%d charged + a %d-byte step) and the step does not fit the %d bytes free in the cgroup after outstanding charges and the %d-byte margin", e.Need, e.Charged, e.Step, e.Free, ChargeMargin)
 }
 
 // Meter reads memory.max, memory.current and memory.stat through fds opened
@@ -242,7 +255,8 @@ func (c *Charge) add(step int64) error {
 		o := c.m.outstanding.Load()
 		free := c.limit - c.base - o - ChargeMargin
 		if free < step {
-			return &InsufficientMemoryError{Need: step, Free: max(0, free)}
+			have := c.n.Load()
+			return &InsufficientMemoryError{Need: have + step, Charged: have, Step: step, Free: max(0, free)}
 		}
 		if c.m.outstanding.CompareAndSwap(o, o+step) {
 			c.n.Add(step)
