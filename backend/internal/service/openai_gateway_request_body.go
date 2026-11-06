@@ -1243,10 +1243,17 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 }
 
 // DecodeFullBody 保留阶段一既有 full-map 行为；后续阶段会把调用点下沉到复杂分支。
-// A full decode: the caller takes ChargeRequestConversion first
-// (TestRequestConvertersChargeFirst).
-func (v openAIRequestView) DecodeFullBody() (map[string]any, error) {
-	return getOpenAIRequestBodyMap(nil, v.body)
+// A full decode: it takes charge (the k_conv top-up) first, through
+// DecodeFullRequestBody.
+func (v openAIRequestView) DecodeFullBody(charge func() error) (map[string]any, error) {
+	var reqBody map[string]any
+	if err := DecodeFullRequestBody(charge, v.body, &reqBody); err != nil {
+		if IsRequestConversionRefused(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("parse request: %w", err)
+	}
+	return reqBody, nil
 }
 
 func (v *openAIRequestView) MarkPatchSet(path string, value any) {
@@ -1746,7 +1753,7 @@ type openAIResponsesCompatibilityOptions struct {
 	// by request-shape compatibility rewrites such as web_search history.
 	Compact bool
 	// ChargeConversion is the legacy-ingress rewrite's converter top-up
-	// (requestConversionCharger); nil charges nothing (a WebSocket message).
+	// (RequestConversionCharger); nil charges nothing (a WebSocket message).
 	ChargeConversion func() error
 }
 
@@ -1761,7 +1768,7 @@ func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *
 		var err error
 		charge := opts.ChargeConversion
 		if charge == nil {
-			charge = noConversionCharge
+			charge = NoConversionCharge
 		}
 		normalized, changed, err = normalizeOpenAIResponsesLegacyIngressWithConfig(opts.Config, body, charge)
 		if err != nil {
@@ -2829,14 +2836,6 @@ func isEmptyBase64DataURI(raw string) bool {
 		return false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(rest, "base64,")) == ""
-}
-
-func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error) {
-	var reqBody map[string]any
-	if err := decodeOpenAIJSONUseNumber(body, &reqBody); err != nil {
-		return nil, fmt.Errorf("parse request: %w", err)
-	}
-	return reqBody, nil
 }
 
 // extractOpenAIReasoningEffort 的模型候选语义同 extractOpenAIReasoningEffortFromBody。

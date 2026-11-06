@@ -68,7 +68,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if normalized {
 		body = normalizedBody
 	}
-	legacyIngressBody, legacyIngressChanged, legacyIngressErr := normalizeOpenAIResponsesLegacyIngressWithConfig(s.cfg, body, requestConversionCharger(c))
+	legacyIngressBody, legacyIngressChanged, legacyIngressErr := normalizeOpenAIResponsesLegacyIngressWithConfig(s.cfg, body, RequestConversionCharger(c))
 	if legacyIngressErr != nil {
 		return nil, legacyIngressErr
 	}
@@ -94,7 +94,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	responsesLite := account.IsOpenAI() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader))
 	if responsesLite {
-		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account)
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account, RequestConversionCharger(c))
+		if IsRequestConversionRefused(liteErr) {
+			return nil, liteErr
+		}
 		if liteErr != nil {
 			param := "tools"
 			var validationErr *openAIResponsesLiteValidationError
@@ -118,6 +121,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	compactPath := isOpenAIResponsesCompactPath(c)
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
+		if IsRequestConversionRefused(err) {
+			return nil, err
+		}
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -320,7 +326,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Raw edits cannot express this patch set. Replay it on the decoded
 		// body so the map-based fallback still applies every edit.
 		if reqBody == nil {
-			decoded, decodeErr := requestView.Decode(c)
+			// The raw fallback is a full decode: take the converted request's
+			// charge first, as ensureReqBody does.
+			chargeFallbackDecode := RequestConversionCharger(c)
+			decoded, decodeErr := requestView.DecodeFullBody(chargeFallbackDecode)
 			if decodeErr != nil {
 				return decodeErr
 			}
@@ -338,11 +347,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		// A full decode costs about as much as a protocol conversion (the
 		// Codex OAuth transform, JSON-schema or image-tool rewrites, WS v2,
-		// retries): the converted request's charge first (review rr4).
-		if err := ChargeRequestConversion(c); err != nil {
-			return nil, err
-		}
-		decoded, decodeErr := requestView.DecodeFullBody()
+		// retries): DecodeFullBody takes the converted request's charge
+		// first (review rr4).
+		decoded, decodeErr := requestView.DecodeFullBody(RequestConversionCharger(c))
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -383,15 +390,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// form cannot take is decoded through ensureReqBody.
 	withRequestSkeleton := func(fn func(map[string]any) bool) error {
 		if reqBody == nil {
-			if requestView.HasPatches() {
-				patchedBody, patchErr := requestView.ApplyPatches()
-				if patchErr != nil {
-					return patchErr
-				}
-				body = patchedBody
-				requestView = newOpenAIRequestView(body)
-				bodyModified = false
+			// flushPatches applies pending raw edits under the request-body
+			// memory scope; when raw edits cannot express them it decodes, and
+			// the map path below takes over.
+			if err := flushPatches(); err != nil {
+				return err
 			}
+		}
+		if reqBody == nil {
 			next, changed, ok, err := rewriteOpenAIRequestSkeleton(body, fn)
 			if err != nil {
 				return err
@@ -835,9 +841,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if stateStore := s.getOpenAIWSStateStore(); stateStore != nil && stateStore.HasAnySessionInvalidEncryptedContent() {
 		lineageSessionHash = s.GenerateSessionHash(c, body)
 		if invalidDigests := stateStore.GetSessionInvalidEncryptedContentDigests(lineageGroupID, lineageSessionHash); len(invalidDigests) > 0 {
-			strippedBody, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
-				body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0,
+			strippedBody, strippedCount, stripErr := s.stripSessionInvalidEncryptedContentLogged(
+				body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0, RequestConversionCharger(c),
 			)
+			if stripErr != nil {
+				return nil, stripErr
+			}
 			if strippedCount > 0 {
 				body = strippedBody
 				requestView = newOpenAIRequestView(body)

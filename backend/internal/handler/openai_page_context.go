@@ -13,8 +13,22 @@ var codexSelectedPageName = regexp.MustCompile(`^codex_apps_selected_page_part_(
 
 // Codex injects external context as standalone outputs, without a model tool call.
 // Use the legacy user-message representation for HTTP Responses interoperability.
-func normalizeCodexUntrustedContext(body []byte) ([]byte, bool) {
-	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context") || !hasUniqueJSONMembers(body) {
+//
+// A candidate body is decoded in full, so charge (the k_conv top-up) is taken
+// first; the only error returned is a refused charge (written, final).
+func normalizeCodexUntrustedContext(charge func() error, body []byte) ([]byte, bool, error) {
+	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context") {
+		return body, false, nil
+	}
+	if err := charge(); err != nil {
+		return body, false, err
+	}
+	got, changed := normalizeCodexUntrustedContextCharged(body)
+	return got, changed, nil
+}
+
+func normalizeCodexUntrustedContextCharged(body []byte) ([]byte, bool) {
+	if !hasUniqueJSONMembers(body) {
 		return body, false
 	}
 	var request map[string]json.RawMessage

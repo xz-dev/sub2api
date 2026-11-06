@@ -210,7 +210,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			Config:           s.cfg,
 			ResponsesLite:    responsesLite,
 			Compact:          isOpenAIResponsesCompactPath(c),
-			ChargeConversion: requestConversionCharger(c),
+			ChargeConversion: RequestConversionCharger(c),
 		})
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("normalize passthrough Responses compatibility: %w", normalizeErr)

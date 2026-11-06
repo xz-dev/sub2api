@@ -340,7 +340,7 @@ func TestNormalizeOpenAIResponsesLiteToolsPayload_PreservesResponseCreateShape(t
 		"tool_choice":{"type":"namespace","name":"collaboration"}
 	}`)
 
-	updated, changed, err := normalizeOpenAIResponsesLiteToolsPayload(body)
+	updated, changed, err := normalizeOpenAIResponsesLiteToolsPayload(body, NoConversionCharge)
 
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -361,7 +361,7 @@ func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T
 	}`)
 	tests := []struct {
 		name      string
-		normalize func([]byte) ([]byte, bool, error)
+		normalize func([]byte, func() error) ([]byte, bool, error)
 	}{
 		{name: "OAuth-like tools normalization", normalize: normalizeOpenAIResponsesLiteToolsPayload},
 		{name: "API key parallel normalization", normalize: normalizeOpenAIResponsesLiteParallelToolCallsPayload},
@@ -369,7 +369,7 @@ func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			updated, changed, err := tt.normalize(body)
+			updated, changed, err := tt.normalize(body, NoConversionCharge)
 
 			require.NoError(t, err)
 			require.True(t, changed)
