@@ -53,10 +53,16 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 		controlCtx = context.Background()
 	}
 
+	budget := openAIWSClientReadBudgetFrom(controlCtx)
 	readDone := make(chan openAIWSClientReadResult, 1)
 	go func() {
-		messageType, payload, err := conn.Read(context.Background())
-		readDone <- openAIWSClientReadResult{messageType: messageType, payload: payload, err: err}
+		var result openAIWSClientReadResult
+		if budget != nil {
+			result.messageType, result.payload, result.err = readOpenAIWSClientMessageCharged(conn, budget)
+		} else {
+			result.messageType, result.payload, result.err = conn.Read(context.Background())
+		}
+		readDone <- result
 	}()
 
 	var timer *time.Timer
@@ -97,6 +103,9 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 	for {
 		select {
 		case result := <-readDone:
+			if refusal := openAIWSClientReadRefusalFor(result.err); refusal != nil {
+				return 0, nil, refusal.send(controlCtx, conn, result.err)
+			}
 			return result.messageType, result.payload, result.err
 		case <-timeoutStart:
 			startTimeout()
