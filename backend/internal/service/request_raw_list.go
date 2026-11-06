@@ -369,6 +369,7 @@ func rawItem(item string) string {
 		return "item is not an object"
 	}
 	var typ string
+	var namespace string
 	hasType, hasRole, hasNamespace, nameEscaped := false, false, false, false
 	// Member names, for duplicates: an item with a duplicate name is
 	// decoded alone by the store=false replay and the input-ID sanitizer.
@@ -390,7 +391,7 @@ func rawItem(item string) string {
 		case "role":
 			hasRole = true
 		case "namespace":
-			hasNamespace = true
+			namespace, hasNamespace = v, true
 		case `\`:
 			nameEscaped = true
 		}
@@ -403,8 +404,11 @@ func rawItem(item string) string {
 		return "item with more than 32 members"
 	case dup != "":
 		return "item duplicate member " + rawReasonName(dup)
-	case hasNamespace: // the handler's Codex bootstrap scan acts on it
-		return "item namespace"
+	}
+	if hasNamespace {
+		if reason := rawItemNamespace(namespace); reason != "" {
+			return reason
+		}
 	}
 	name, ok := rawStr(typ)
 	if !hasType {
@@ -420,6 +424,22 @@ func rawItem(item string) string {
 		return "item type " + rawReasonName(name)
 	}
 	return check(item)
+}
+
+// rawItemNamespace: a plain string other than codex_app and codex_tui. The
+// handler's Codex bootstrap scan decodes the whole body only for those two
+// values (gjson input.#(namespace==...), which unescapes, so an escaped
+// value is off too). The API-key forward strips namespace from input items
+// with one raw gjson/sjson edit (stripOpenAIResponsesInputNamespaces).
+func rawItemNamespace(v string) string {
+	ns, ok := rawStr(v)
+	switch {
+	case !ok:
+		return "item namespace not a plain string"
+	case ns == "codex_app" || ns == "codex_tui":
+		return "item namespace " + ns
+	}
+	return ""
 }
 
 func rawPlainItem(string) string { return "" }
