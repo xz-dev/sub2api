@@ -210,6 +210,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 			header  map[string]string
 			prime   string
 			chunked bool
+			only16  bool // client and stress shapes: 16 MiB only
 		}
 		var shapes []shape
 		p := coverProtos[cb.proto]
@@ -241,6 +242,11 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 				return coverBody(p, coverBases[0], n, model, m.root, m.item)
 			}})
 		}
+		if coverGenCombo(cb) { // client-shape corpus (rr6 follow-up item 6)
+			for _, cl := range append(coverClients(), coverStressClients()...) {
+				shapes = append(shapes, shape{name: cl.name, body: cl.body, only16: true})
+			}
+		}
 		// 16 MiB is S; a converted or fully decoded request is charged
 		// k_conv, which the 8 GiB fake cgroup leaves room for, so every
 		// route runs at every size.
@@ -250,6 +256,9 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 			sz := sizes
 			if i == 0 { // tiny at 64 KiB: the fixed per-request overhead, logged only
 				sz = append([]int{64 << 10}, sizes...)
+			}
+			if sh.only16 {
+				sz = []int{16 << 20}
 			}
 			for _, size := range sz {
 				name := prefix + sh.name + "/" + coverSize(size)

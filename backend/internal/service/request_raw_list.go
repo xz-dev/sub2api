@@ -63,6 +63,11 @@ var rawRootMembers = map[string]func(string) string{
 	"temperature":            rawNumber,
 	"top_p":                  rawNumber,
 	"top_logprobs":           rawNumber,
+	// Client-shape corpus (rr6 follow-up, TestBodySpoolClientShapesRawPath,
+	// 16 MiB, API-key force_responses, forwarded unchanged):
+	"max_tool_calls":     rawNumber, // client_sdk_max_tool_calls k 3.01
+	"conversation":       rawAny,    // client_sdk_conversation k 3.22
+	"context_management": rawArray,  // client_sdk_context_management k 3.22
 }
 
 // rawItemTypes: input item types (an item's last "type" member; an item
@@ -77,18 +82,56 @@ var rawItemTypes = map[string]func(string) string{
 	"custom_tool_call":        rawPlainItem,
 	"custom_tool_call_output": rawPlainItem,
 	"reasoning":               rawReasoningItem,
+	// Client-shape corpus (rr6 follow-up, TestBodySpoolClientShapesRawPath,
+	// 16 MiB, API-key force_responses, forwarded unchanged; the input-ID
+	// sanitizer's raw id delete applies to web_search_call):
+	"item_reference":          rawPlainItem, // client_sdk_item_reference k 3.22
+	"compaction":              rawPlainItem, // client_sdk_compaction k 3.22
+	"web_search_call":         rawPlainItem, // client_sdk_tool_web_search k 3.22
+	"file_search_call":        rawPlainItem, // client_sdk_tool_file_search k 3.22
+	"code_interpreter_call":   rawPlainItem, // client_sdk_tool_code_interpreter k 3.22
+	"mcp_list_tools":          rawPlainItem, // client_sdk_tool_mcp k 3.22
+	"mcp_approval_request":    rawPlainItem, // same
+	"mcp_approval_response":   rawPlainItem, // same
+	"mcp_call":                rawPlainItem, // same
+	"computer_call":           rawPlainItem, // client_sdk_tool_computer_use_preview k 3.22
+	"computer_call_output":    rawPlainItem, // same
+	"shell_call":              rawPlainItem, // client_sdk_tool_shell k 3.23
+	"shell_call_output":       rawPlainItem, // same
+	"apply_patch_call":        rawPlainItem, // client_sdk_tool_apply_patch k 3.01
+	"apply_patch_call_output": rawPlainItem, // same
+	// pi tool search (pi-ai convertResponsesMessages; tool_search_call ids
+	// get the sanitizer's raw delete):
+	"additional_tools":     rawPlainItem, // client_pi_additional_tools k 2.23
+	"tool_search_call":     rawPlainItem, // client_pi_tool_search_items k 2.23
+	"tool_search_output":   rawPlainItem, // same
+	"configuration_update": rawPlainItem, // client_pi_configuration_update k 2.23
 }
 
 // rawMessageRoles and rawContentPartTypes: a message's role and the types
 // of its content parts. Measured: gen_item_message_<role>, gen_part_<type>.
 var rawMessageRoles = map[string]bool{"user": true, "assistant": true, "system": true, "developer": true}
 
-var rawContentPartTypes = map[string]bool{"input_text": true, "output_text": true, "input_image": true, "refusal": true}
+var rawContentPartTypes = map[string]bool{"input_text": true, "output_text": true, "input_image": true, "refusal": true,
+	"input_file": true, // client_sdk_input_file k 3.22 (rr6 follow-up)
+}
 
 // rawToolTypes: tool declarations. Measured: gen_tool_<type>, k <= 2.3.
 // custom: no rewrite on a non-passthrough API-key account (the passthrough
 // normalizer that decodes it is behind the account half).
-var rawToolTypes = map[string]bool{"function": true, "custom": true}
+var rawToolTypes = map[string]bool{"function": true, "custom": true,
+	// Client-shape corpus (rr6 follow-up, TestBodySpoolClientShapesRawPath,
+	// 16 MiB, API-key force_responses, forwarded unchanged), each with its
+	// call items:
+	"web_search":           true, // client_sdk_tool_web_search k 3.22
+	"web_search_preview":   true, // client_sdk_tool_web_search_preview k 3.22
+	"file_search":          true, // client_sdk_tool_file_search k 3.22
+	"code_interpreter":     true, // client_sdk_tool_code_interpreter k 3.22
+	"mcp":                  true, // client_sdk_tool_mcp k 3.22
+	"computer_use_preview": true, // client_sdk_tool_computer_use_preview k 3.22
+	"shell":                true, // client_sdk_tool_shell k 3.23
+	"apply_patch":          true, // client_sdk_tool_apply_patch k 3.01
+}
 
 // rawDecisiveHeaders: request headers the body path reads that change how
 // the body is decoded or rewritten, each with its verified values. Headers
@@ -327,7 +370,20 @@ func rawItem(item string) string {
 	}
 	var typ string
 	hasType, hasRole, hasNamespace, nameEscaped := false, false, false, false
+	// Member names, for duplicates: an item with a duplicate name is
+	// decoded alone by the store=false replay and the input-ID sanitizer.
+	var seen [32]string
+	n, dup := 0, ""
 	forEachRawMember(item, func(k, v string) bool {
+		for _, s := range seen[:n] {
+			if s == k && dup == "" {
+				dup = k
+			}
+		}
+		if n < len(seen) {
+			seen[n] = k
+		}
+		n++
 		switch k {
 		case "type":
 			typ, hasType = v, true
@@ -343,6 +399,10 @@ func rawItem(item string) string {
 	switch {
 	case nameEscaped:
 		return "item member name with an escape"
+	case n > len(seen):
+		return "item with more than 32 members"
+	case dup != "":
+		return "item duplicate member " + rawReasonName(dup)
 	case hasNamespace: // the handler's Codex bootstrap scan acts on it
 		return "item namespace"
 	}
