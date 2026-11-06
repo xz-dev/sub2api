@@ -201,12 +201,18 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil
 	}
-	input := gjson.GetBytes(body, "input")
+	// A read-only view, and the result built in one buffer: GetBytes would
+	// copy all of input and SetRawBytes all of the body again (rr8).
+	input := parseRawJSONView(body).Get("input")
 	if !input.IsArray() {
 		return body, nil
 	}
+	inputEnd := input.Index + len(input.Raw)
+	if input.Index <= 0 || inputEnd > len(body) || string(body[input.Index:inputEnd]) != input.Raw {
+		return body, fmt.Errorf("locate OpenAI input for namespace deletion")
+	}
 
-	var rebuilt bytes.Buffer
+	var rebuilt []byte
 	changed := false
 	// Offsets below are relative to input.Raw, not the full request body.
 	copyFrom := 0
@@ -224,12 +230,13 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 		if !changed {
 			// Allocate only on the first change; copy unchanged spans without
 			// traversing their items again or converting them to byte slices.
-			rebuilt.Grow(len(input.Raw))
+			rebuilt = make([]byte, 0, len(body))
+			rebuilt = append(rebuilt, body[:input.Index]...)
 			changed = true
 		}
 		itemStart := item.Index - input.Index
-		_, _ = rebuilt.WriteString(input.Raw[copyFrom:itemStart])
-		_, _ = rebuilt.Write(itemBody)
+		rebuilt = append(rebuilt, input.Raw[copyFrom:itemStart]...)
+		rebuilt = append(rebuilt, itemBody...)
 		copyFrom = itemStart + len(item.Raw)
 		return true
 	})
@@ -239,12 +246,8 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 	if !changed {
 		return body, nil
 	}
-	_, _ = rebuilt.WriteString(input.Raw[copyFrom:])
-	stripped, err := sjson.SetRawBytes(body, "input", rebuilt.Bytes())
-	if err != nil {
-		return body, fmt.Errorf("replace OpenAI input after namespace deletion: %w", err)
-	}
-	return stripped, nil
+	rebuilt = append(rebuilt, input.Raw[copyFrom:]...)
+	return append(rebuilt, body[inputEnd:]...), nil
 }
 
 func setOpenAIResponsesNamespaceNames(c *gin.Context, names map[string]apicompat.ResponsesNamespaceName) {

@@ -4,6 +4,7 @@ package handler
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -20,8 +21,6 @@ import (
 // each with why (report.md, "client shapes"). Every other client shape
 // must be on the list.
 var coverClientsOffList = map[string]string{
-	"client_pi_tool_search":            "carries a namespace function_call (client_pi_namespace_call)",
-	"client_pi_namespace_call":         "item namespace: the handler's Codex bootstrap scan decodes it (charged); forwarded changed, k 5.01",
 	"client_sdk_prompt":                "root prompt: k 14.48 on the passthrough path",
 	"client_sdk_tool_image_generation": "Codex image-tool policy and image bridge decode it for Codex clients (corpus shape image_generation); k 3.22 for this non-Codex client",
 	"client_sdk_tool_local_shell":      "local_shell_call ids are deleted by the input-ID sanitizer (prefix fc_ expected): forwarded changed, k 3.22",
@@ -39,6 +38,7 @@ var coverClientsCharged = map[string]string{
 // the upstream byte for byte.
 var coverClientsRewritten = map[string]string{
 	"client_pi":                   "store=false replay: reasoning rs_ id dropped (editStoreFalseReplayItemRaw)",
+	"client_pi_tool_search":       "same pi items as client_pi: rs_ id dropped",
 	"stress_reasoning_rs_summary": "store=false replay: rs_ id dropped",
 	"stress_message_call_id":      "store=false replay: message call_id dropped",
 	"stress_item_id_sanitize":     "input-ID sanitizer: message ids without msg prefix dropped",
@@ -111,8 +111,11 @@ func TestBodySpoolClientShapesRawPath(t *testing.T) {
 // coverExpectedForwardSum: sha256 of body as a non-Codex client's request
 // reaches an API-key upstream unchanged: only the raw patch that deletes
 // the root members the upstream rejects (openai_gateway_forward.go,
-// prompt_cache_retention, safety_identifier, prompt_cache_options). The
-// expected body is dropped before the measured request.
+// prompt_cache_retention, safety_identifier, prompt_cache_options), and
+// the raw edit that deletes namespace from direct input items when no
+// namespace tool is declared (stripOpenAIResponsesInputNamespaces; listed
+// bodies declare none). The expected body is dropped before the measured
+// request.
 func coverExpectedForwardSum(t *testing.T, body []byte) string {
 	t.Helper()
 	want := body
@@ -122,6 +125,20 @@ func coverExpectedForwardSum(t *testing.T, body []byte) string {
 			want, err = sjson.DeleteBytes(want, key)
 			require.NoError(t, err)
 		}
+	}
+	var withNamespace []int
+	idx := 0
+	gjson.GetBytes(want, "input").ForEach(func(_, item gjson.Result) bool {
+		if item.Get("namespace").Exists() {
+			withNamespace = append(withNamespace, idx)
+		}
+		idx++
+		return true
+	})
+	for _, i := range withNamespace {
+		var err error
+		want, err = sjson.DeleteBytes(want, fmt.Sprintf("input.%d.namespace", i))
+		require.NoError(t, err)
 	}
 	sum := sha256.Sum256(want)
 	return string(sum[:])
