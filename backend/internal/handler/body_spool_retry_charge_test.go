@@ -40,7 +40,7 @@ func TestBodySpoolRetryDecodeTopUpRefused(t *testing.T) {
 	h := newLargeBodyTestHandler(t, upstream, "apikey")
 	enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	rt := bodySpoolRuntimeFor(h.cfg)
-	sConv := conversionLimit(rt.cfg, 320<<20, true, false)
+	sConv := conversionLimit(rt.cfg, 320<<20, true, false, kConvFor(rt.cfg, "responses"))
 	body := largeResponsesTextBody(int(sConv) + 1<<20)
 	c, rec := newLargeBodyTestContext("/v1/responses", body, "")
 	h.Responses(c)

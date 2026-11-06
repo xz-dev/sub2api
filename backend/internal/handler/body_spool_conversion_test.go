@@ -45,9 +45,10 @@ func TestBodySpoolConvertedRequestTopUp(t *testing.T) {
 	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "apikey")
 	enableBodySpoolForTest(t, h.cfg, true, 4<<30, nil)
 	cfg := bodySpoolRuntimeFor(h.cfg).cfg
-	want := chargeBytes(cfg.KConv-cfg.KSkel, roundUpGranule(int64(len(body))))
+	kConv := kConvFor(cfg, "responses")
+	want := chargeBytes(kConv-cfg.KSkel, roundUpGranule(int64(len(body))))
 	native, converted := held("apikey"), held("apikey_chat")
-	t.Logf("held while upstream runs: native %d B, converted %d B (k_skel %.1f, k_conv %.1f)", native, converted, cfg.KSkel, cfg.KConv)
+	t.Logf("held while upstream runs: native %d B, converted %d B (k_skel %.1f, k_conv %.1f)", native, converted, cfg.KSkel, kConv)
 	require.Equal(t, want, converted-native)
 }
 
@@ -78,12 +79,13 @@ func TestBodySpoolConvertedRequestRefusalIsFinal(t *testing.T) {
 	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
 	enableBodySpoolForTest(t, h.cfg, true, 320<<20, nil)
 	cfg := bodySpoolRuntimeFor(h.cfg).cfg
-	sConv := conversionLimit(cfg, 320<<20, true, false)
-	t.Logf("S_conv at 320m = %d B (%.2f MiB), k_conv %.1f", sConv, float64(sConv)/(1<<20), cfg.KConv)
+	kConv := kConvFor(cfg, "responses")
+	sConv := conversionLimit(cfg, 320<<20, true, false, kConv)
+	t.Logf("S_conv at 320m = %d B (%.2f MiB), k_conv %.1f", sConv, float64(sConv)/(1<<20), kConv)
 	require.Less(t, sConv, cfg.InlineLimit)
-	require.EqualValues(t, 65, cfg.KConv)
-	require.EqualValues(t, 3846144, sConv, "S_conv at 320m with k_conv 65 (3.67 MiB)")
-	require.EqualValues(t, 3493888, conversionLimit(cfg, 320<<20, false, false), "L_conv at 320m with k_conv 65")
+	require.EqualValues(t, 65, cfg.KConv, "the config floor")
+	require.EqualValues(t, 3846144, conversionLimit(cfg, 320<<20, true, false, cfg.KConv), "S_conv at 320m with k_conv 65 (3.67 MiB)")
+	require.EqualValues(t, 3493888, conversionLimit(cfg, 320<<20, false, false, cfg.KConv), "L_conv at 320m with k_conv 65")
 
 	above := largeResponsesTextBody(int(sConv) + 1<<20)
 	upstream, code, e := run("apikey_chat", above, 0)

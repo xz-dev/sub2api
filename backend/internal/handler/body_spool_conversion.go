@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -19,20 +21,100 @@ import (
 // final: the converter returns service.ErrRequestConversionRefused, which
 // is not a failover error.
 
+// kConvClass is one row of the per-class k_conv table.
+type kConvClass struct {
+	k float64
+	// measured: the worst total allocation / body bytes of the class over
+	// the charge-cover corpus (p1-p7 and the gen parts, 2/8/16 MiB, at
+	// e69ae929aa); k = ceil(measured x 1.15), at least config k_conv (65).
+	measured float64
+}
+
+// kConvClasses (review rr10): k_conv per charge class. Total allocation is
+// the bound (GC can be starved in production), so each class is charged
+// its own worst total allocation plus 15 %. The class follows how the
+// ingest charges: a covered Responses request and a Responses fallback
+// request (compact, Content-Encoding) take the class's top-up when they go
+// off the verified-raw list; every other route is charged its class's
+// k_conv from the first byte. The converter rework (M3) is how these come
+// back down.
+var kConvClasses = map[string]kConvClass{
+	// Covered Responses route, OpenAI platform, off-list top-up (S_conv):
+	// Responses->Chat on force_chat, codex_tui shape, 16 MiB (98.38); the
+	// Codex OAuth transform 76.61.
+	"responses": {k: 114, measured: 98.38},
+	// Responses fallback, off-list top-up (L_conv): compact on the Codex
+	// OAuth account, codex_tui, 16 MiB (92.86).
+	"responses_fallback": {k: 107, measured: 92.86},
+	// A Responses route on a non-OpenAI group (Responses->Anthropic or
+	// Gemini): rr6_custom_tools, 16 MiB (124.30).
+	"responses_other_platform": {k: 143, measured: 124.30},
+	// /chat/completions: Chat->Gemini, rr6_tinyinvalid, 8 MiB (225.73);
+	// Chat->Anthropic 176.82, the Codex OAuth account 130.17.
+	"chat": {k: 260, measured: 225.73},
+	// /messages: Anthropic->Responses on the Codex OAuth account, tiny,
+	// 8 MiB (138.24); API-key accounts 98.26.
+	"messages": {k: 159, measured: 138.24},
+	// /count_tokens: the Grok local estimate, rr6_tinyinvalid, 8 MiB
+	// (134.94); OpenAI accounts 74.58.
+	"count_tokens": {k: 156, measured: 134.94},
+	// Gemini-native /v1beta/ (also under /antigravity/): Antigravity
+	// generateContent, rr6_tinyinvalid, 8 MiB (127.13); AI Studio 38.69.
+	"gemini": {k: 147, measured: 127.13},
+	// /web_search (Grok): rr6_tinyinvalid, 16 MiB (24.56).
+	"web_search": {k: 65, measured: 24.56},
+	// Any other route: not measured, so the worst class.
+	"unmeasured": {k: 260},
+}
+
+// kConvClassFor names the charge class of c's request (kConvClasses).
+func kConvClassFor(c *gin.Context, covered, responsesFallback bool) string {
+	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	switch {
+	case covered:
+		return "responses"
+	case responsesFallback:
+		return "responses_fallback"
+	case isBareOpenAIResponsesPath(c):
+		return "responses_other_platform"
+	case strings.HasSuffix(path, "/chat/completions"):
+		return "chat"
+	case strings.HasSuffix(path, "/count_tokens"):
+		return "count_tokens"
+	case strings.HasSuffix(path, "/messages"):
+		return "messages"
+	case strings.Contains(path, "/v1beta/"):
+		return "gemini"
+	case strings.HasSuffix(path, "/web_search"):
+		return "web_search"
+	}
+	return "unmeasured"
+}
+
+// kConvFor is the k_conv of class: its table row, at least config k_conv.
+func kConvFor(cfg config.GatewayBodySpoolConfig, class string) float64 {
+	k, ok := kConvClasses[class]
+	if !ok {
+		k = kConvClasses["unmeasured"]
+	}
+	return max(cfg.KConv, k.k)
+}
+
 // conversionLimit is S_conv for a covered request (the inline limit, never
-// above what k_conv × the inline bytes leaves room for beside the idle
+// above what kConv × the inline bytes leaves room for beside the idle
 // working set and the margin under memory.max), or L_conv for a fallback
-// request (fallbackLimit with k_conv in place of k_path).
-func conversionLimit(cfg config.GatewayBodySpoolConfig, memoryMax int64, covered, ticketed bool) int64 {
+// request (fallbackLimit with kConv in place of k_path). kConv is the
+// request's class k_conv (kConvFor).
+func conversionLimit(cfg config.GatewayBodySpoolConfig, memoryMax int64, covered, ticketed bool, kConv float64) int64 {
 	if !covered {
-		return fallbackLimitFor(cfg, memoryMax, cfg.KConv)
+		return fallbackLimitFor(cfg, memoryMax, kConv)
 	}
 	limit := cfg.InlineLimit
 	if ticketed {
 		limit = cfg.TicketedInlineLimit
 	}
 	room := memoryMax - bodyspool.ChargeMargin - cfg.IdleBaseline - bodyspool.ReadBufferBytes
-	derived := int64(float64(room)/cfg.KConv) - 24<<10
+	derived := int64(float64(room)/kConv) - 24<<10
 	derived -= derived % bodyspool.DefaultChargeStep
 	return max(0, min(limit, derived))
 }
@@ -54,11 +136,11 @@ func setConversionCharge(c *gin.Context, rt *bodySpoolRuntime, st *bodySpoolStat
 			result = service.ErrRequestConversionRefused
 			return result
 		}
-		limit := conversionLimit(rt.cfg, st.charge.Limit(), st.covered, st.lease != nil)
+		limit := conversionLimit(rt.cfg, st.charge.Limit(), st.covered, st.lease != nil, st.kConv)
 		if inline > limit {
 			return refuse(tooLarge(limit, "%s is converted to another protocol for this account; a converted request's limit is %d bytes and this one has %d", c.Request.URL.Path, limit, inline))
 		}
-		if extra := chargeBytes(rt.cfg.KConv-k, roundUpGranule(inline)); extra > 0 {
+		if extra := chargeBytes(st.kConv-k, roundUpGranule(inline)); extra > 0 {
 			if err := st.charge.Add(extra); err != nil {
 				return refuse(refusalFor(err, 0))
 			}
