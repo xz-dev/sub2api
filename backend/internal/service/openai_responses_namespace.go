@@ -166,8 +166,12 @@ func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, erro
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil
 	}
+	// A full decode: the k_conv top-up first (review rr5).
 	var requestBody map[string]any
-	if err := json.Unmarshal(body, &requestBody); err != nil {
+	if err := DecodeFullRequestBody(RequestConversionCharger(c), body, &requestBody); err != nil {
+		if IsRequestConversionRefused(err) {
+			return body, err
+		}
 		return body, fmt.Errorf("decode OpenAI namespace body: %w", err)
 	}
 	names, changed, err := apicompat.FlattenResponsesNamespacesExcept(requestBody, map[string]bool{"image_gen": true})

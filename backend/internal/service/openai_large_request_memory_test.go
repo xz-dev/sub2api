@@ -22,7 +22,7 @@ func TestLargeNativeResponsesRemainsByteIdentical(t *testing.T) {
 	body := largeNativeResponsesBody(2 << 20)
 	for _, fn := range []func([]byte) ([]byte, bool, error){
 		func(body []byte) ([]byte, bool, error) {
-			return normalizeOpenAIResponsesLegacyIngress(body, noConversionCharge)
+			return normalizeOpenAIResponsesLegacyIngress(body, NoConversionCharge)
 		},
 		sanitizeOpenAIResponsesInputItemIDs,
 		normalizeOpenAIResponsesReasoningContentReplay,
@@ -78,11 +78,11 @@ func TestStoreFalseRawReplayMatchesDecodedBehavior(t *testing.T) {
 
 func TestLegacyIngressNativeFastPathKeepsValidation(t *testing.T) {
 	for _, body := range []string{`{"input":[]} trailing`, `{"input":[}`, `[{"input":[]}]`} {
-		_, _, err := normalizeOpenAIResponsesLegacyIngress([]byte(body), noConversionCharge)
+		_, _, err := normalizeOpenAIResponsesLegacyIngress([]byte(body), NoConversionCharge)
 		require.Error(t, err)
 	}
 	body := []byte(`{"model":"gpt-5.4","input":"keep","mess\u0061ges":[]}`)
-	out, changed, err := normalizeOpenAIResponsesLegacyIngress(body, noConversionCharge)
+	out, changed, err := normalizeOpenAIResponsesLegacyIngress(body, NoConversionCharge)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.False(t, gjson.GetBytes(out, "messages").Exists())
@@ -96,7 +96,7 @@ func BenchmarkOpenAILargeNativeRequest(b *testing.B) {
 		fn   func([]byte) ([]byte, bool, error)
 	}{
 		{"legacy_ingress", func(b []byte) ([]byte, bool, error) {
-			return normalizeOpenAIResponsesLegacyIngress(b, noConversionCharge)
+			return normalizeOpenAIResponsesLegacyIngress(b, NoConversionCharge)
 		}},
 		{"input_ids", sanitizeOpenAIResponsesInputItemIDs},
 		{"reasoning_replay", normalizeOpenAIResponsesReasoningContentReplay},

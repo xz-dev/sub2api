@@ -480,7 +480,7 @@ func TestOpenAIRequestPatches_MovePatchesToDecodedBody(t *testing.T) {
 	})
 	_, err := view.ApplyPatches(context.Background())
 	require.Error(t, err, "raw edits cannot set a key under an array")
-	decoded, err := view.Decode(nil)
+	decoded, err := view.DecodeFullBody(NoConversionCharge)
 	require.NoError(t, err)
 	view.MovePatchesTo(decoded)
 	require.False(t, view.HasPatches())

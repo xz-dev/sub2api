@@ -25,7 +25,7 @@ func TestNormalizeCodexDelegationBootstrapSupportedTools(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"gpt-5","input":[{"type":"function_call_output","namespace":"` + tt.namespace + `","name":"` + tt.tool + `","output":"` + delegationEnvelope + `"` + tt.callID + `}]}`)
-			got, changed := normalizeCodexDelegationBootstrap(body)
+			got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 			require.True(t, changed)
 			require.Equal(t, "message", gjson.GetBytes(got, "input.0.type").String())
 			require.Equal(t, "user", gjson.GetBytes(got, "input.0.role").String())
@@ -56,7 +56,7 @@ func TestNormalizeCodexDelegationBootstrapRejectsUnsafeShapes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"gpt-5","input":[` + tt.item + `]` + tt.extra + `}`)
-			got, changed := normalizeCodexDelegationBootstrap(body)
+			got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 			require.False(t, changed)
 			require.Equal(t, body, got)
 		})
@@ -66,7 +66,7 @@ func TestNormalizeCodexDelegationBootstrapRejectsUnsafeShapes(t *testing.T) {
 func TestNormalizeCodexDelegationBootstrapWithHistoricalContext(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","previous_response_id":"resp-1","input":[{"type":"function_call_output","namespace":"codex_app","name":"send_message_to_thread","output":"` + delegationEnvelope + `"},{"type":"function_call","call_id":"call-1"},{"type":"function_call_output","call_id":"call-1","output":"done"},{"type":"item_reference","id":"item-1"},{"type":"computer_call","call_id":"call-2"}]}`)
 
-	got, changed := normalizeCodexDelegationBootstrap(body)
+	got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 	require.True(t, changed)
 	require.Equal(t, "message", gjson.GetBytes(got, "input.0.type").String())
 	require.Equal(t, "user", gjson.GetBytes(got, "input.0.role").String())
@@ -91,7 +91,7 @@ func TestNormalizeCodexDelegationBootstrapPreviousResponseID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"model":"gpt-5","input":[{"type":"function_call_output","namespace":"codex_app","name":"create_thread","output":"` + delegationEnvelope + `"}]` + tt.value + `}`)
-			got, changed := normalizeCodexDelegationBootstrap(body)
+			got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 			require.Equal(t, tt.changed, changed)
 			if !tt.changed {
 				require.Equal(t, body, got)
@@ -125,7 +125,7 @@ func TestNormalizeCodexDelegationBootstrapRejectsDuplicateMembers(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(tt.body)
-			got, changed := normalizeCodexDelegationBootstrap(body)
+			got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 			require.False(t, changed)
 			require.Equal(t, body, got)
 		})
@@ -134,7 +134,7 @@ func TestNormalizeCodexDelegationBootstrapRejectsDuplicateMembers(t *testing.T) 
 
 func TestNormalizeCodexDelegationBootstrapPreservesExactNumbers(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","metadata":{"integer":9007199254740993},"input":[{"type":"function_call_output","namespace":"codex_app","name":"create_thread","output":"` + delegationEnvelope + `"}]}`)
-	got, changed := normalizeCodexDelegationBootstrap(body)
+	got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 	require.True(t, changed)
 	require.Equal(t, "9007199254740993", gjson.GetBytes(got, "metadata.integer").Raw)
 }
@@ -157,7 +157,7 @@ func TestNormalizeCodexDelegationBootstrapRequiresCompleteEnvelope(t *testing.T)
 	}
 	for _, envelope := range malformed {
 		body := []byte(`{"model":"gpt-5","input":[{"type":"function_call_output","namespace":"codex_app","name":"create_thread","output":` + mustJSON(t, envelope) + `}]}`)
-		got, changed := normalizeCodexDelegationBootstrap(body)
+		got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 		require.False(t, changed, envelope)
 		require.Equal(t, body, got)
 	}
@@ -165,13 +165,13 @@ func TestNormalizeCodexDelegationBootstrapRequiresCompleteEnvelope(t *testing.T)
 
 func TestNormalizeCodexDelegationBootstrapPreservesOrderAndIsIdempotent(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"before"},{"type":"function_call_output","namespace":"codex_tui","name":"send_message_to_thread","output":"` + delegationEnvelope + `"},{"type":"message","role":"user","content":"after"}]}`)
-	got, changed := normalizeCodexDelegationBootstrap(body)
+	got, changed := normalizeCodexDelegationBootstrapUncharged(body)
 	require.True(t, changed)
 	require.Equal(t, "before", gjson.GetBytes(got, "input.0.content").String())
 	require.Equal(t, delegationEnvelope, gjson.GetBytes(got, "input.1.content.0.text").String())
 	require.Equal(t, "after", gjson.GetBytes(got, "input.2.content").String())
 
-	again, changedAgain := normalizeCodexDelegationBootstrap(got)
+	again, changedAgain := normalizeCodexDelegationBootstrapUncharged(got)
 	require.False(t, changedAgain)
 	require.Equal(t, got, again)
 }

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 type openAIResponsesLiteValidationError struct {
@@ -236,9 +239,15 @@ func openAIResponsesLiteToolIdentityForError(rawTool any) string {
 	return fmt.Sprintf("tool type %q name %q", strings.TrimSpace(firstNonEmptyString(tool["type"])), strings.TrimSpace(firstNonEmptyString(tool["name"])))
 }
 
-func normalizeOpenAIResponsesLiteToolsPayload(body []byte) ([]byte, bool, error) {
+// normalizeOpenAIResponsesLiteToolsPayload decodes all of the body (the
+// namespace tools move into input), so it takes charge, the k_conv top-up,
+// first (DecodeFullRequestBody).
+func normalizeOpenAIResponsesLiteToolsPayload(body []byte, charge func() error) ([]byte, bool, error) {
 	var requestBody map[string]any
-	if err := decodeOpenAIJSONUseNumber(body, &requestBody); err != nil {
+	if err := DecodeFullRequestBody(charge, body, &requestBody); err != nil {
+		if IsRequestConversionRefused(err) {
+			return body, false, err
+		}
 		return body, false, fmt.Errorf("decode responses Lite request body: %w", err)
 	}
 	changed, err := normalizeOpenAIResponsesLiteTools(requestBody)
@@ -252,10 +261,54 @@ func normalizeOpenAIResponsesLiteToolsPayload(body []byte) ([]byte, bool, error)
 	return rebuilt, true, nil
 }
 
-func normalizeOpenAIResponsesLiteParallelToolCallsPayload(body []byte) ([]byte, bool, error) {
+// normalizeOpenAIResponsesLiteParallelToolCallsPayload sets the root
+// parallel_tool_calls to false on raw JSON, as decoding and re-encoding
+// would (the decoder keeps the last duplicate): an absent or true value
+// becomes false, false stays, any other value is a validation error. Only
+// a body that is not a JSON object or has a duplicate root name takes the
+// decoding form, with its top-up (review rr5: the header alone decoded every
+// API-key body, about 15 x its size).
+func normalizeOpenAIResponsesLiteParallelToolCallsPayload(body []byte, charge func() error) ([]byte, bool, error) {
+	root := parseRawJSONView(body)
+	var scratch []string
+	if !gjson.ValidBytes(body) || !root.IsObject() || hasDuplicateJSONObjectKeysIn(root, &scratch) {
+		return normalizeOpenAIResponsesLiteParallelToolCallsDecoded(body, charge)
+	}
+	parallel := lastRawObjectMember(root, "parallel_tool_calls")
+	switch {
+	case parallel.Type == gjson.False:
+		return body, false, nil
+	case parallel.Type == gjson.True:
+		return rewriteRawObjectMember(body, root, parallel, false, 5, func(out []byte) []byte {
+			return append(out, "false"...)
+		}), true, nil
+	case parallel.Exists():
+		return body, false, newOpenAIResponsesLiteValidationError("parallel_tool_calls", "responses Lite requires parallel_tool_calls to be a boolean")
+	}
+	const member = `"parallel_tool_calls":false`
+	open := bytes.IndexByte(body, '{')
+	rest := bytes.TrimLeft(body[open+1:], " \t\r\n")
+	out := make([]byte, 0, len(body)+len(member)+1)
+	out = append(out, body[:open+1]...)
+	out = append(out, member...)
+	if rest[0] != '}' {
+		out = append(out, ',')
+	}
+	return append(out, body[open+1:]...), true, nil
+}
+
+// normalizeOpenAIResponsesLiteParallelToolCallsDecoded is the decoding form,
+// for a body the raw form does not take.
+func normalizeOpenAIResponsesLiteParallelToolCallsDecoded(body []byte, charge func() error) ([]byte, bool, error) {
 	var requestBody map[string]any
-	if err := decodeOpenAIJSONUseNumber(body, &requestBody); err != nil {
+	if err := DecodeFullRequestBody(charge, body, &requestBody); err != nil {
+		if IsRequestConversionRefused(err) {
+			return body, false, err
+		}
 		return body, false, fmt.Errorf("decode responses Lite request body: %w", err)
+	}
+	if requestBody == nil { // the body is null
+		return body, false, nil
 	}
 	changed, err := ensureOpenAIResponsesLiteParallelToolCalls(requestBody, false)
 	if err != nil || !changed {
@@ -268,12 +321,15 @@ func normalizeOpenAIResponsesLiteParallelToolCallsPayload(body []byte) ([]byte, 
 	return rebuilt, true, nil
 }
 
-func normalizeOpenAIResponsesLitePayloadForAccount(body []byte, account *Account) ([]byte, bool, error) {
+// normalizeOpenAIResponsesLitePayloadForAccount: charge is the k_conv
+// top-up for a form that decodes all of the body (RequestConversionCharger,
+// or NoConversionCharge for a WebSocket message).
+func normalizeOpenAIResponsesLitePayloadForAccount(body []byte, account *Account, charge func() error) ([]byte, bool, error) {
 	if account == nil || !account.IsOpenAI() {
 		return body, false, nil
 	}
 	if account.IsOpenAIOAuthLike() {
-		return normalizeOpenAIResponsesLiteToolsPayload(body)
+		return normalizeOpenAIResponsesLiteToolsPayload(body, charge)
 	}
-	return normalizeOpenAIResponsesLiteParallelToolCallsPayload(body)
+	return normalizeOpenAIResponsesLiteParallelToolCallsPayload(body, charge)
 }

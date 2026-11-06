@@ -20,6 +20,7 @@ type coverCombo struct {
 	proto, model   string // body protocol and model
 	pattern, path  string // gin route pattern and request path
 	passthrough    bool   // no converter: also runs at 16 MiB (S)
+	local          bool   // answered without an upstream call
 	setup          func(t *testing.T) (http.Handler, *config.Config, *coverUpstream)
 }
 
@@ -84,5 +85,19 @@ func coverOpenAICombos() []coverCombo {
 			})
 		}
 	}
+	// Grok count_tokens: a local estimate (Anthropic -> Responses), no
+	// upstream call (review rr5: found by the static check).
+	out = append(out, coverCombo{
+		route: "grok/count_tokens", account: "local", proto: "claude", model: "grok-4",
+		pattern: "/v1/messages/count_tokens", path: "/v1/messages/count_tokens", local: true,
+		setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
+			up := &coverUpstream{}
+			h := newLargeBodyTestHandlerWithAccounts(t, up, largeBodyTestAccounts("apikey"))
+			enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
+			r := gin.New()
+			r.POST("/v1/messages/count_tokens", coverAuth(service.PlatformGrok), BodySpoolIngest(h.cfg), h.GrokCountTokens)
+			return r, h.cfg, up
+		},
+	})
 	return out
 }
