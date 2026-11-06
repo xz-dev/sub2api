@@ -22,6 +22,8 @@ type coverUpstream struct {
 	// invalid_encrypted_content (one per count), as for a replayed item the
 	// upstream cannot decrypt.
 	rejectEncrypted atomic.Int32
+	// failAuth (rr6): a request whose Authorization holds it gets a 502.
+	failAuth string
 }
 
 // streamScan discards what it is given and notes whether `"stream":true`
@@ -50,6 +52,14 @@ func (u *coverUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.R
 	}
 	path := req.URL.Path
 	u.lastPath.Store(path)
+	if u.failAuth != "" && strings.Contains(req.Header.Get("Authorization"), u.failAuth) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"bad gateway"}}`)),
+			Request:    req,
+		}, nil
+	}
 	if strings.HasSuffix(path, "/responses") && u.rejectEncrypted.Load() > 0 {
 		u.rejectEncrypted.Add(-1)
 		return &http.Response{

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"math/rand"
 	"strconv"
+	"strings"
 )
 
 // Corpus for the charge-covers-allocation test: Go versions of the
@@ -33,6 +34,8 @@ var coverBases = []coverBase{
 	{name: "text", words: []string{"the", "keeper", "spool", "frame", "bytes", "request", "response", "tool", "output", "build", "test", "patch"}, user: [2]int{1 << 10, 16 << 10}, asst: [2]int{512, 4096}, parts: true},
 	{name: "utext", words: []string{"the", "keeper", "spool", `\"quoted\"`, `tab\t`, `newline\n`, "größe", "数据", "ünïcödé", "retry"}, user: [2]int{8 << 10, 60 << 10}, asst: [2]int{512, 4096}, parts: true},
 	{name: "invalid", words: []string{"the", "keeper", "spool", "frame", "bytes", "build", "test", "patch"}, user: [2]int{8 << 10, 60 << 10}, asst: [2]int{512, 4096}, parts: true, invalidEveryN: 8},
+	// rr6: tiny messages with invalid UTF-8 (structure-heavy and invalid).
+	{name: "rr6_tinyinvalid", words: []string{"ok", "yes", "no", "go", "run", "fix", "log", "a", "b", "c"}, user: [2]int{1, 6}, asst: [2]int{1, 6}, invalidEveryN: 2},
 }
 
 func (s coverBase) text(b *bytes.Buffer, rnd *rand.Rand, user bool) {
@@ -174,6 +177,22 @@ var coverMods = []struct {
 		header: map[string]string{"session_id": "cover-lineage-session"}, prime: "invalid_encrypted_content"},
 	// A namespace tool declaration (OAuth flattens it).
 	{proto: "responses", name: "namespace_tools", root: `"tools":[{"type":"namespace","name":"ns","description":"d","tools":[{"type":"function","name":"f","description":"d","parameters":{"type":"object","properties":{}}}]}],`},
+	// rr6 reviewer additions.
+	// A replayed reasoning item with content (Forward: reasoning content replay).
+	{proto: "responses", name: "rr6_reasoning_content", item: `{"type":"reasoning","summary":[],"encrypted_content":"enc-cover-ok","content":[{"type":"reasoning_text","text":"t"}]}`},
+	// Codex freeform (custom) tool and its call/output pair.
+	{proto: "responses", name: "rr6_custom_tools", root: `"tools":[{"type":"custom","name":"apply_patch","description":"d","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}],`,
+		item: `{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"x"},{"type":"custom_tool_call_output","call_id":"c1","output":"ok"}`},
+	// A tool schema with a null root type and a lookahead pattern.
+	{proto: "responses", name: "rr6_tool_schema", root: `"tools":[{"type":"function","name":"f","description":"d","parameters":{"type":null,"properties":{"a":{"type":"string","pattern":"^(?=a).*$"}}}}],`},
+	// A gzip-encoded body (fallback path, charged on decoded bytes).
+	{proto: "responses", name: "rr6_gzip", header: map[string]string{"Content-Encoding": "gzip"}},
+	{proto: "claude", name: "rr6_gzip", header: map[string]string{"Content-Encoding": "gzip"}},
+	{proto: "chat", name: "rr6_gzip", header: map[string]string{"Content-Encoding": "gzip"}},
+	// A base64 input image (tier-A media).
+	{proto: "responses", name: "rr6_input_image", item: `{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + strings.Repeat("QUJD", 256<<10) + `"}]}`},
+	// An empty base64 input image (sanitized before the send).
+	{proto: "responses", name: "rr6_empty_image", item: `{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,"}]}`},
 	{proto: "chat", name: "dupkey", root: `"stream":false,`},
 	{proto: "chat", name: "parallel_tool_calls", root: `"parallel_tool_calls":true,`},
 	{proto: "chat", name: "json_schema", root: `"response_format":{"type":"json_schema","json_schema":{"name":"r","schema":{"type":"object","properties":{}}}},`},

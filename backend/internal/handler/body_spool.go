@@ -299,12 +299,23 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	// its Content-Length is the compressed size, so it is charged like a
 	// chunked body, on its decoded bytes (ingestFallbackBody).
 	encoding := requestContentEncoding(c)
+	// Fail-safe charge (review rr6, service/request_raw_list.go): only a
+	// Responses route is on the verified-raw list. A covered request is
+	// charged k_skel and a Responses fallback request (compact, or a
+	// Content-Encoding body) the measured k_path; once the body is read,
+	// a shape that is not verified takes the k_conv top-up at once, before
+	// any decode. Every other route is charged k_conv from the first byte
+	// (limit L_conv).
+	responsesFallback := !covered && isBodySpoolResponsesFallbackRequest(c)
 	limit, k := fallbackLimit(rt.cfg, st.charge.Limit()), rt.cfg.KPath
-	if covered {
+	switch {
+	case covered:
 		limit, k = rt.cfg.InlineLimit, rt.cfg.KSkel
 		if st.lease != nil {
 			limit = rt.cfg.TicketedInlineLimit
 		}
+	case !responsesFallback:
+		limit, k = conversionLimit(rt.cfg, st.charge.Limit(), false, false), rt.cfg.KConv
 	}
 	// prepaid: inline (or fallback) bytes covered before reading, in whole
 	// granules. At least the first granule, so the first buffer is charged
@@ -331,6 +342,10 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 			return fail(r)
 		}
 		setConversionCharge(c, rt, st, k, c.Request.ContentLength) // readPrereadBody set it
+		if responsesFallback {
+			body, _ := c.Request.Body.(*pkghttputil.PrereadBody)
+			return chargeUnlessVerifiedRawShape(c, body.Bytes())
+		}
 		return true
 	}
 
@@ -383,7 +398,48 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	if sp != nil || leased != "" {
 		c.Request = c.Request.WithContext(service.WithRequestBodySpool(c.Request.Context(), sp, leased))
 	}
+	return chargeUnlessVerifiedRawShape(c, skel)
+}
+
+// chargeUnlessVerifiedRawShape is the request half of the fail-safe
+// charge: a Responses body (the skeleton, or the read fallback body) whose
+// shape or headers are not on the verified-raw list takes the k_conv
+// top-up now. false: the refusal (S_conv / L_conv 413, or 503) is written.
+func chargeUnlessVerifiedRawShape(c *gin.Context, body []byte) bool {
+	ok, reason := service.VerifiedRawResponsesRequest(body, c.Request.Header)
+	if ok {
+		return true
+	}
+	c.Set(bodySpoolRawReasonKey, reason)
+	if err := service.ChargeRequestConversion(c); err != nil {
+		c.Abort()
+		return false
+	}
 	return true
+}
+
+// bodySpoolRawReasonKey holds why a request is not on the verified-raw
+// list (tests and logs).
+const bodySpoolRawReasonKey = "large_request_raw_reason"
+
+// isBodySpoolResponsesFallbackRequest: a Responses-protocol request on an
+// OpenAI group that is not covered: the compact subpath, or a bare path
+// with a Content-Encoding body.
+func isBodySpoolResponsesFallbackRequest(c *gin.Context) bool {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil || apiKey.Group == nil || apiKey.Group.Platform != service.PlatformOpenAI {
+		return false
+	}
+	if isBareOpenAIResponsesPath(c) {
+		return true
+	}
+	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	for _, base := range []string{EndpointResponses, "/openai/v1/responses", "/responses", "/backend-api/codex/responses"} {
+		if path == base+"/compact" {
+			return true
+		}
+	}
+	return false
 }
 
 // fallbackLimit is L as design D2 defines it: the largest body whose worst

@@ -46,6 +46,8 @@ var coverOpenAIAccounts = []struct{ name, kind, mode string }{
 	{"apikey-force_responses", "apikey", "force_responses"},
 	{"apikey-force_chat", "apikey", "force_chat_completions"},
 	{"oauth", "oauth", ""},
+	// rr6: API-key account with extra.openai_passthrough.
+	{"apikey-passthrough", "apikey_passthrough", ""},
 }
 
 func coverOpenAICombos() []coverCombo {
@@ -59,6 +61,8 @@ func coverOpenAICombos() []coverCombo {
 		{"chat/completions", "chat", "/v1/chat/completions", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.ChatCompletions }},
 		{"v1/messages", "claude", "/v1/messages", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.Messages }},
 		{"count_tokens", "claude", "/v1/messages/count_tokens", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.CountTokens }},
+		// rr6: the compact subpath.
+		{"v1/responses/compact", "responses", "/v1/responses/compact", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.Responses }},
 	}
 	var out []coverCombo
 	for _, rt := range routes {
@@ -83,6 +87,25 @@ func coverOpenAICombos() []coverCombo {
 			})
 		}
 	}
+	out = append(out, rr6GuardCombos()...)
+	// rr6: failover from a passthrough account (502) to a plain API-key
+	// force_responses account.
+	out = append(out, coverCombo{
+		route: "v1/responses", account: "failover-passthrough-to-plain", proto: "responses", model: "gpt-5.5",
+		pattern: "/v1/responses", path: "/v1/responses",
+		setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
+			up := &coverUpstream{failAuth: "sk-pass"}
+			accounts := largeBodyTestAccounts("apikey")
+			accounts[0].Extra["openai_passthrough"] = true
+			accounts[0].Credentials = map[string]any{"api_key": "sk-pass", "base_url": "https://api.openai.com"}
+			accounts[1].Extra["openai_responses_mode"] = "force_responses"
+			h := newLargeBodyTestHandlerWithAccounts(t, up, accounts)
+			enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
+			r := gin.New()
+			r.POST("/v1/responses", coverAuth(service.PlatformOpenAI), BodySpoolIngest(h.cfg), h.Responses)
+			return r, h.cfg, up
+		},
+	})
 	// Grok count_tokens: a local estimate (Anthropic -> Responses), no
 	// upstream call (review rr5: found by the static check).
 	out = append(out, coverCombo{
