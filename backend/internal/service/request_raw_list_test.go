@@ -157,3 +157,42 @@ func TestIsVerifiedRawAccount(t *testing.T) {
 	ok, _ = IsVerifiedRawAccount(base(), OpenAIUpstreamTransportResponsesWebsocketV2)
 	require.False(t, ok, "WS mode on")
 }
+
+// TestVerifiedRawMemberNames (review rr10): in every object the list
+// walks, a member name with an escape or longer than rawNameMaxBytes takes
+// the request off the list; the reason names the object. A plain name of
+// rawNameMaxBytes stays on.
+func TestVerifiedRawMemberNames(t *testing.T) {
+	at := strings.Repeat("a", rawNameMaxBytes)
+	escBig := `\n` + strings.Repeat("a", 1<<16)
+	cases := []struct{ name, body, object string }{
+		{"root", `{"model":"m","%s":1}`, "root"},
+		{"tool", `{"tools":[{"type":"function","name":"f","parameters":{"type":"object","properties":{}},"%s":1}]}`, "root member tools: tool"},
+		{"content part", `{"input":[{"role":"user","content":[{"type":"input_text","text":"q","%s":1}]}]}`, "root member input: content part"},
+		{"item", `{"input":[{"type":"function_call","call_id":"c","name":"f","arguments":"{}","%s":1}]}`, "root member input: item"},
+		{"reasoning", `{"reasoning":{"effort":"low","%s":1}}`, "root member reasoning:"},
+		{"conversation", `{"conversation":{"id":"c","%s":"c"}}`, "root member conversation:"},
+		{"text", `{"text":{"verbosity":"low","%s":1}}`, "root member text:"},
+		{"client_metadata", `{"client_metadata":{"%s":"v"}}`, "root member client_metadata:"},
+		{"stream_options", `{"stream_options":{"%s":true}}`, "root member stream_options:"},
+		{"tool_choice", `{"tool_choice":{"type":"function","name":"f","%s":1}}`, "root member tool_choice:"},
+		{"prompt_cache_options", `{"prompt_cache_options":{"%s":"v"}}`, "root member prompt_cache_options:"},
+	}
+	for _, tc := range cases {
+		if tc.name != "root" {
+			ok, reason := VerifiedRawResponsesRequest([]byte(strings.Replace(tc.body, "%s", at, 1)), http.Header{})
+			require.True(t, ok, "%s: plain name of %d bytes: %s", tc.name, rawNameMaxBytes, reason)
+		}
+		for _, v := range []struct{ name, why string }{
+			{at + "a", "member name longer than 256 bytes"},
+			{`x\ny`, "member name with an escape"},
+			{`\u0074ype`, "member name with an escape"},
+			{escBig, "member name with an escape"},
+		} {
+			ok, reason := VerifiedRawResponsesRequest([]byte(strings.Replace(tc.body, "%s", v.name, 1)), http.Header{})
+			require.False(t, ok, tc.name)
+			want := tc.object + " " + v.why
+			require.Equal(t, want, reason, tc.name)
+		}
+	}
+}
