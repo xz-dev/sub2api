@@ -68,9 +68,8 @@ func chunked(c *gin.Context) {
 }
 
 // TestOpenAIResponsesSingleTextBody16MiBAt320m: one 16 MiB text body (inline
-// = S) at the default k_skel (8) on 320m with a 45 MiB idle is charged
-// 128 MiB once and
-// passes; the charge is held while the request runs and dropped after.
+// = S) at the default k_skel (11) on 320m with a 45 MiB idle is charged
+// 176 MiB once and passes; the charge is held while the request runs and dropped after.
 func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := largeResponsesTextBody(16 << 20)
@@ -104,7 +103,7 @@ func TestOpenAIResponsesSingleTextBody16MiBAt320m(t *testing.T) {
 }
 
 // TestOpenAIResponsesConcurrentTextBodies16MiB: while one 16 MiB text body
-// holds its 224 MiB charge, others get 503 insufficient_memory (none is
+// holds its 176 MiB charge (k_skel 11), others get 503 insufficient_memory (none is
 // admitted past memory.max - 32 MiB); after it returns, the next one passes.
 func TestOpenAIResponsesConcurrentTextBodies16MiB(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -176,7 +175,7 @@ func TestBodySpoolChargeHeldUntilChainReturns(t *testing.T) {
 }
 
 // TestOpenAIResponsesFreshHopBaseIsWorkingSet: on a fresh hop memory.current
-// is 85 MiB, 40 MiB of it inactive page cache. The 224 MiB charge fits
+// is 85 MiB, 40 MiB of it inactive page cache. The 176 MiB charge fits
 // against the working set (45 MiB). An unreadable memory.stat refuses the
 // request explicitly before any byte reaches upstream.
 func TestOpenAIResponsesFreshHopBaseIsWorkingSet(t *testing.T) {

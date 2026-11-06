@@ -331,7 +331,12 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 					// A request the prompt guard refuses (fail-closed 503, e.g. on
 					// a 16M-digit number: adv_num_*_int) ends before the lookup.
 					guardRefused := r.status == http.StatusServiceUnavailable && strings.Contains(r.reply, "prompt_guard_unavailable")
-					if cb.sessionBlock && !guardRefused {
+					// So does a product refusal before the upstream (rr11: the
+					// adv_rv_root_service_tier_* and _previous_response_id_*
+					// shapes get 400 invalid service_tier / previous_response_id
+					// not available); it is listed as not exercised below.
+					productRefused := r.calls == 0 && r.status >= 400 && r.status < 500 && r.status != http.StatusRequestEntityTooLarge
+					if cb.sessionBlock && !guardRefused && !productRefused {
 						assert.Greater(t, srv.up.blockScopeHits.Load(), hits, "the session-block transcript lookup did not run")
 					}
 					logCoverResult(t, name, r)
@@ -435,6 +440,6 @@ var coverPrimes = map[string]func(t *testing.T, srv coverServer, path string, bo
 // (TotalAlloc) may exceed its peak charge by for reasons outside the
 // request under test. Measured (rr10): the harness combo (recorder,
 // request, gin, sampler; nothing charged) allocates at most 11,784 B in
-// total at 16 MiB. 64 KiB is 5.6 x the harness cost and 0.4 % of the
-// smallest asserted charge (16 MiB: k_skel 8 x 2 MiB).
+// total at 16 MiB. 64 KiB is 5.6 x the harness cost and 0.3 % of the
+// smallest asserted charge (22 MiB: k_skel 11 x 2 MiB).
 const chargeCoverAllowance = 64 << 10

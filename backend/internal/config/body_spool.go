@@ -76,10 +76,17 @@ const (
 	// Allocation p1-p5 and the gen corpus, 2/8/16 MiB), the worst on-list
 	// k is 6.61, the guard probe at 2 MiB (probe_escaped_user_string with
 	// the prompt guard on; the guard's own text copies sit inside k_skel).
-	// 8 = ceil(6.61 x 1.15). S_h = (320 - 32 - 48) / 8 = 30 MiB >= S, so S
-	// stays 16 MiB, but a 16 MiB request is now charged 128 MiB: one fits
-	// an idle 320m hop at a time (two at 6).
-	DefaultBodySpoolKSkel float64 = 8
+	// 8 = ceil(6.61 x 1.15). Review rr10/rr11: the metric is total heap
+	// allocation / body (forced GC before and after), and the generator
+	// gained the reviewer's 128 shapes (cap boundaries, many items with a
+	// 4 KiB identifier). Worst on-list total-allocation k over p1-p7, the
+	// full generator and the client shapes: 9.08, adv_rv1_many_reasoning_id
+	// _cap4096 at 2 MiB (many reasoning items, each with a 4 KiB id holding
+	// one escape: a per-value cap does not bound the sum). 11 = max(8,
+	// ceil(9.08 x 1.15)). S_h = (320 - 32 - 48) / 11 = 21.8 MiB >= S, so S
+	// stays 16 MiB inline (8 MiB ticketed); a 16 MiB request is charged
+	// 176 MiB: one fits a 320m hop at a time.
+	DefaultBodySpoolKSkel float64 = 11
 	// k_conv: a request a protocol converter rewrites, or that is decoded
 	// whole (every converter and Forward's full decode take it). Measured
 	// in-process: peak live heap / body bytes, default GOGC, no memory
