@@ -127,7 +127,7 @@ scanRoot:
 			case "system", "developer":
 				if systemPrefixOpen {
 					_, _ = b.WriteString("|system=")
-					if c := msg.Get("content"); c.Exists() {
+					if c := firstRawJSONMember(msg, "content"); c.Exists() {
 						writeContentSeedJSON(&b, c.Raw)
 					}
 				}
@@ -135,7 +135,7 @@ scanRoot:
 				systemPrefixOpen = false
 				if !firstUserCaptured {
 					_, _ = b.WriteString("|first_user=")
-					if c := msg.Get("content"); c.Exists() {
+					if c := firstRawJSONMember(msg, "content"); c.Exists() {
 						writeContentSeedJSON(&b, c.Raw)
 					}
 					firstUserCaptured = true
@@ -157,7 +157,7 @@ scanRoot:
 				case "system", "developer":
 					if systemPrefixOpen {
 						_, _ = b.WriteString("|system=")
-						if c := item.Get("content"); c.Exists() {
+						if c := firstRawJSONMember(item, "content"); c.Exists() {
 							writeContentSeedJSON(&b, c.Raw)
 						}
 					}
@@ -165,7 +165,7 @@ scanRoot:
 					systemPrefixOpen = false
 					if !firstUserCaptured {
 						_, _ = b.WriteString("|first_user=")
-						if c := item.Get("content"); c.Exists() {
+						if c := firstRawJSONMember(item, "content"); c.Exists() {
 							writeContentSeedJSON(&b, c.Raw)
 						}
 						firstUserCaptured = true
