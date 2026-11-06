@@ -44,6 +44,7 @@ type GatewayBodySpoolConfig struct {
 	// converter charges (k_conv - k) x the inline bytes on top of the
 	// request's k_skel or k_path before it allocates, and refuses bodies
 	// above S_conv (covered) or L_conv (fallback), both derived from k_conv.
+	// It is the floor of the per-class table (handler kConvClasses, rr10).
 	KConv          float64 `mapstructure:"k_conv"`
 	KMem           float64 `mapstructure:"k_mem"`
 	KPath          float64 `mapstructure:"k_path"`
@@ -89,8 +90,9 @@ const (
 	// (TestBodySpoolPassthroughLiveK on an OAuth account), Responses -> Chat
 	// 25.67 (TestBodySpoolConversionLiveK). 65 is the worst plus ~20 %.
 	// Container peak - idle is not used: memory.peak saturates at
-	// memory.max. k_conv only sizes S_conv and L_conv: S_conv at 320m =
-	// (320 - 32 - 48) / 65 = 3.7 MiB.
+	// memory.max. Review rr10: total allocation is the bound, so each
+	// charge class has its own k_conv (handler kConvClasses, worst total
+	// allocation x 1.15, 107-260); 65 is the floor of that table.
 	DefaultBodySpoolKConv          float64 = 65
 	DefaultBodySpoolKMem           float64 = 0.1
 	DefaultBodySpoolKPath          float64 = 17

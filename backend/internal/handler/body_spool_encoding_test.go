@@ -59,7 +59,7 @@ func TestBodySpoolEncodedBodyChargedDecoded(t *testing.T) {
 			path  string
 			limit int64
 			k     float64
-		}{{"/v1/responses", limit, rt.cfg.KPath}, {"/v1/chat/completions", conversionLimit(rt.cfg, 320<<20, false, false), rt.cfg.KConv}} {
+		}{{"/v1/responses", limit, rt.cfg.KPath}, {"/v1/chat/completions", conversionLimit(rt.cfg, 320<<20, false, false, kConvFor(rt.cfg, "chat")), kConvFor(rt.cfg, "chat")}} {
 			path, limit := route.path, route.limit
 			c, rec := newLargeBodyTestContext(path, z, "")
 			c.Request.Header.Set("Content-Encoding", enc)

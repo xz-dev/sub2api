@@ -40,7 +40,7 @@ func TestBodySpoolFallbackBodyAtLimitFits(t *testing.T) {
 	require.Greater(t, limit, int64(10<<20))
 	require.Less(t, limit, rt.cfg.FallbackLimit)
 
-	lConv := conversionLimit(rt.cfg, 320<<20, false, false)
+	lConv := conversionLimit(rt.cfg, 320<<20, false, false, kConvFor(rt.cfg, "chat"))
 	t.Logf("L_conv at 320m = %d bytes (%.2f MiB)", lConv, float64(lConv)/(1<<20))
 	require.Less(t, lConv, limit)
 	routes := []struct {
