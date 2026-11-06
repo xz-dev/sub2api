@@ -179,6 +179,16 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 
 	sessionID := explicitOpenAIRequestSessionID(c, body)
 	if sessionID == "" && len(body) > 0 {
+		if !isGrokRequestContext(c) {
+			// Hashed as it is written: the content seed can be as large as
+			// the body and is not held (rr10).
+			currentHash, legacyHash, ok := hashOpenAIContentSessionSeed(c, body)
+			if !ok {
+				return ""
+			}
+			attachOpenAILegacySessionHashToGin(c, legacyHash)
+			return currentHash
+		}
 		sessionID = deriveOpenAIContentSessionSeed(body)
 	}
 	if sessionID == "" {

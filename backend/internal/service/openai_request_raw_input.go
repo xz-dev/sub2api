@@ -108,15 +108,21 @@ func hasDuplicateJSONObjectKeys(object gjson.Result) bool {
 }
 
 // lastRawObjectMember returns the value of the last member named key of a
-// JSON object view: the standard decoder keeps the last duplicate.
+// JSON object view: the standard decoder keeps the last duplicate. Only
+// that member's string value is unescaped (rr10: Result.ForEach unescaped
+// every string member of the object, a large content string included, on
+// each call).
 func lastRawObjectMember(object gjson.Result, key string) gjson.Result {
 	var last gjson.Result
-	object.ForEach(func(name, value gjson.Result) bool {
+	forEachRawJSONMember(object, func(name, value gjson.Result) bool {
 		if name.Str == key {
 			last = value
 		}
 		return true
 	})
+	if last.Type == gjson.String {
+		last.Str = gjson.Parse(last.Raw).Str
+	}
 	return last
 }
 

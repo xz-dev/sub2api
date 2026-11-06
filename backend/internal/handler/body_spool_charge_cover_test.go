@@ -45,7 +45,13 @@ const chargeCoverInterval = time.Millisecond
 
 // chargeCoverReading is one request's samples.
 type chargeCoverReading struct {
-	PeakHeap   int64 // max live heap growth over the post-GC baseline
+	// TotalAlloc is every heap byte allocated while the request ran
+	// (/gc/heap/allocs:bytes after minus before), the asserted metric
+	// (rr10). It does not depend on when a GC runs: it is the live peak
+	// of a run in which no GC runs mid-request, which other requests in
+	// flight can cause in production. It is never below PeakHeap.
+	TotalAlloc int64
+	PeakHeap   int64 // max live heap growth over the post-GC baseline (information only)
 	PeakCharge int64 // max bytes charged
 	// Excess is max over samples of heap growth minus the largest charge
 	// seen up to and including that sample: allocation the charge did not
@@ -56,16 +62,22 @@ type chargeCoverReading struct {
 	Samples int
 }
 
-// measureChargeCover runs fn and samples the live heap
+// measureChargeCover runs fn and reads the heap bytes it allocated in
+// total (TotalAlloc), and samples the live heap
 // (/memory/classes/heap/objects:bytes: live objects plus dead ones not yet
-// swept, the metric k_skel and k_conv were measured with) and charged().
-// The baseline is read after a forced GC, with the body and the handler
-// already built.
+// swept) and charged(). The baselines are read after a forced GC, with
+// the body and the handler already built and the previous request's
+// charge released. The total is read when fn has returned and the charge
+// is back to zero (a detached hold, the async audit, has finished), so
+// work the request left running is counted in its own case and not in
+// the next one.
 func measureChargeCover(charged func() int64, fn func()) chargeCoverReading {
+	waitChargeReleased(charged)
 	runtime.GC()
-	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/gc/heap/allocs:bytes"}}
 	metrics.Read(s)
 	base := int64(s[0].Value.Uint64())
+	allocBase := s[1].Value.Uint64()
 	var r chargeCoverReading
 	sample := func(ls []metrics.Sample) {
 		metrics.Read(ls)
@@ -93,13 +105,27 @@ func measureChargeCover(charged func() int64, fn func()) chargeCoverReading {
 		}
 	}()
 	fn()
+	waitChargeReleased(charged)
 	close(stop)
 	wg.Wait()
 	// One sample after the request: a request shorter than an interval
 	// still counts, since what it allocated stays in the metric until the
 	// next GC.
 	sample([]metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}})
+	// A small object is counted when the span it came from leaves its P's
+	// cache; a GC flushes every cache, so the total is exact.
+	runtime.GC()
+	end := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
+	metrics.Read(end)
+	r.TotalAlloc = int64(end[0].Value.Uint64() - allocBase)
 	return r
+}
+
+// waitChargeReleased waits (up to 5 s) until nothing is charged.
+func waitChargeReleased(charged func() int64) {
+	for deadline := time.Now().Add(5 * time.Second); charged() != 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // coverResult is one case.
@@ -247,11 +273,19 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 				shapes = append(shapes, shape{name: cl.name, body: cl.body, only16: true})
 			}
 		}
-		if cb.sessionBlock { // rr9: only the probe with the session block on
+		if cb.sessionBlock || cb.advOnly { // rr9/rr10: only the probe and adv_*
 			shapes = shapes[:0]
 		}
 		if cb.proto == "responses" { // rr9 reviewer probe
 			shapes = append(shapes, shape{name: coverProbeEscapedUser, body: func(n int) []byte { return coverEscapedUserStringBody(cb.model, n) }})
+		}
+		if coverAdvCombo(cb) { // rr10 adversarial corpus
+			gen := os.Getenv("SUB2API_CHARGE_COVER_GEN") != ""
+			for _, a := range coverAdvShapes() {
+				if coverAdvShapeOn(cb, a.name, gen) {
+					shapes = append(shapes, shape{name: a.name, body: func(n int) []byte { return a.body(cb.model, n) }})
+				}
+			}
 		}
 		// 16 MiB is S; a converted or fully decoded request is charged
 		// k_conv, which the 8 GiB fake cgroup leaves room for, so every
@@ -287,8 +321,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 					if cb.sessionBlock {
 						assert.Greater(t, srv.up.blockScopeHits.Load(), hits, "the session-block transcript lookup did not run")
 					}
-					t.Logf("COVER %s status %d calls %d bytes %d peak_heap %d peak_charge %d excess %d samples %d",
-						name, r.status, r.calls, r.bytes, r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
+					logCoverResult(t, name, r)
 					if r.reply != "" {
 						t.Logf("COVER %s reply %s", name, r.reply)
 					}
@@ -311,12 +344,10 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 						// Not asserted: the per-request cost that does not
 						// grow with the body (decoders, buffers, the upstream
 						// request) is left to the meter's ChargeMargin.
-						t.Logf("COVER-INFO %s fixed overhead above charge %d B", name, r.Excess)
+						t.Logf("COVER-INFO %s fixed overhead above charge %d B (total alloc)", name, r.TotalAlloc-r.PeakCharge)
 						return
 					}
-					assert.LessOrEqual(t, r.Excess, int64(chargeCoverAllowance),
-						"live heap %d B above charge (peak heap %d, peak charge %d, allowance %d)",
-						r.Excess, r.PeakHeap, r.PeakCharge, chargeCoverAllowance)
+					assertChargeCovers(t, r.chargeCoverReading)
 				})
 			}
 		}
@@ -328,8 +359,27 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 	}
 }
 
+// logCoverResult logs one case: k is total allocation / body, charge_k
+// the peak charge / body; peak_heap and excess (live heap above the
+// charge) are the sampled live figures, for information.
+func logCoverResult(t *testing.T, name string, r coverResult) {
+	t.Helper()
+	t.Logf("COVER %s status %d calls %d bytes %d total_alloc %d k %.2f charge_k %.2f peak_heap %d peak_charge %d excess %d samples %d",
+		name, r.status, r.calls, r.bytes, r.TotalAlloc, float64(r.TotalAlloc)/float64(max(r.bytes, 1)),
+		float64(r.PeakCharge)/float64(max(r.bytes, 1)), r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
+}
+
+// assertChargeCovers: the request allocated in total at most its peak
+// charge plus chargeCoverAllowance.
+func assertChargeCovers(t *testing.T, r chargeCoverReading) {
+	t.Helper()
+	assert.LessOrEqual(t, r.TotalAlloc, r.PeakCharge+chargeCoverAllowance,
+		"total allocation %d B is %d B above the peak charge %d (allowance %d; live peak %d)",
+		r.TotalAlloc, r.TotalAlloc-r.PeakCharge, r.PeakCharge, chargeCoverAllowance, r.PeakHeap)
+}
+
 // coverSelected: only is empty or one of its "|"-separated substrings is
-// in name.
+// in name ("a&b": both; "^a": name starts with a).
 func coverSelected(name, only string) bool {
 	if only == "" {
 		return true
@@ -340,6 +390,10 @@ func coverSelected(name, only string) bool {
 		}
 		all := true // rr6: "a&b" needs both
 		for _, sub := range strings.Split(part, "&") {
+			if prefix, ok := strings.CutPrefix(sub, "^"); ok { // rr10: "^a" is a prefix
+				all = all && strings.HasPrefix(name, prefix)
+				continue
+			}
 			all = all && strings.Contains(name, sub)
 		}
 		if all {

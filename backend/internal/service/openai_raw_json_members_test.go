@@ -59,7 +59,7 @@ func TestForEachRawJSONMemberParity(t *testing.T) {
 			if w.value.Type == gjson.Number && !(math.IsNaN(w.value.Num) && math.IsNaN(g.value.Num)) {
 				require.Equal(t, w.value.Num, g.value.Num, name)
 			}
-			require.Equal(t, w.value.String(), rawJSONStringValue(g.value), "%s string %d", name, i)
+			require.Equal(t, w.value.String(), rawJSONMemberString(g.value), "%s string %d", name, i)
 			if w.value.Type == gjson.String {
 				require.Empty(t, g.value.Str, "a value is never unescaped")
 				for _, want := range []string{"compaction_trigger", "b", w.value.Str, w.value.Str + "x"} {

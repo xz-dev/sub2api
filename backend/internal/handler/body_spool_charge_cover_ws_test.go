@@ -46,15 +46,12 @@ func runCoverWSReadCases(t *testing.T, only string) int {
 
 			var out wsReadOutcome
 			r := measureChargeCover(charged, func() { out = sendWSMessage(t, srv, msg) })
-			t.Logf("COVER %s status %d bytes %d peak_heap %d peak_charge %d excess %d samples %d",
-				name, out.closeCode, len(msg), r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
+			logCoverResult(t, name, coverResult{chargeCoverReading: r, status: int(out.closeCode), bytes: len(msg)})
 			assert.Equal(t, "request_too_large", gjson.Get(out.event, "error.code").String(), out.event)
 			assert.Equal(t, "sub2api", gjson.Get(out.event, "error.hop").String())
 			assert.EqualValues(t, size, gjson.Get(out.event, "error.limit_bytes").Int())
 			assert.Equal(t, coderws.StatusNormalClosure, out.closeCode)
-			assert.LessOrEqual(t, r.Excess, int64(chargeCoverAllowance),
-				"live heap %d B above charge (peak heap %d, peak charge %d, allowance %d)",
-				r.Excess, r.PeakHeap, r.PeakCharge, chargeCoverAllowance)
+			assertChargeCovers(t, r)
 			assert.Eventually(t, func() bool { return charged() == 0 }, coverWSSettle, coverWSPoll, "the failed read's charge was returned")
 		})
 	}

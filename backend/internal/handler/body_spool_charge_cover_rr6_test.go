@@ -34,8 +34,18 @@ func (e *coverGuardEngine) Evaluate(ctx context.Context, req securityaudit.Reque
 	return e.evaluator.Evaluate(ctx, cfg, snapshot)
 }
 
+// coverGuardPrefix names a combo with the guard on.
+const coverGuardPrefix = "guard-"
+
+// coverGuardOn turns the blocking prompt guard on for h.
+func coverGuardOn(h *OpenAIGatewayHandler) {
+	sc := &blockWordScanner{}
+	h.securityAuditCoordinator = securityaudit.NewCoordinator(nil,
+		&coverGuardEngine{evaluator: securityaudit.NewGuardEvaluator(sc, nil, securityaudit.NewAtomicMetrics())})
+}
+
 func rr6GuardCombos(sessionBlock bool) []coverCombo {
-	account := "guard-apikey-force_responses"
+	account := coverGuardPrefix + "apikey-force_responses"
 	if sessionBlock {
 		account = coverSessionBlockPrefix + account
 	}
@@ -54,9 +64,7 @@ func rr6GuardCombos(sessionBlock bool) []coverCombo {
 					accounts[i].Extra["openai_responses_mode"] = "force_responses"
 				}
 				h := newCoverHandler(t, up, accounts, sessionBlock)
-				sc := &blockWordScanner{}
-				h.securityAuditCoordinator = securityaudit.NewCoordinator(nil,
-					&coverGuardEngine{evaluator: securityaudit.NewGuardEvaluator(sc, nil, securityaudit.NewAtomicMetrics())})
+				coverGuardOn(h)
 				enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
 				r := gin.New()
 				r.POST(rt.pattern, coverAuth(service.PlatformOpenAI), BodySpoolIngest(h.cfg), h.Responses)

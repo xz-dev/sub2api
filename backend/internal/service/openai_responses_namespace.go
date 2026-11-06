@@ -120,7 +120,7 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 		return found
 	}
 
-	if hasNamespaceTool(gjson.GetBytes(body, "tools")) {
+	if hasNamespaceTool(firstRawJSONMember(parseRawJSONView(body), "tools")) { // a view: GetBytes copied all of tools (rr10)
 		return true
 	}
 
@@ -129,7 +129,7 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 	// intentionally not rewritten by normalizeOpenAIResponsesLiteTools, so the
 	// declaration can arrive here only in this form.
 	// A read-only view: GetBytes would copy all of input (review rr3).
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.IsArray() {
 		return false
 	}
@@ -203,7 +203,7 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 	}
 	// A read-only view, and the result built in one buffer: GetBytes would
 	// copy all of input and SetRawBytes all of the body again (rr8).
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.IsArray() {
 		return body, nil
 	}

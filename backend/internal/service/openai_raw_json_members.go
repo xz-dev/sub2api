@@ -1,8 +1,12 @@
 package service
 
 import (
+	"bytes"
+	"errors"
+	"math"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 )
@@ -12,9 +16,11 @@ import (
 // over an item copied a large escaped string once. It walks the members of
 // an object view (or the elements of an array view) exactly as ForEach
 // does, including on malformed input, and gives the same names, Raw, Type,
-// Num and Index; a string value's Str is left empty (use
-// rawJSONStringValue). A name is unescaped as ForEach does it (no copy
-// without an escape).
+// Num and Index; a string value's Str is left empty
+// (derivedKeyBudget.stringValue unescapes one within a budget). A number
+// is parsed by parseJSONNumberBounded (same value, no copy of a long
+// literal). A name is unescaped as ForEach does it (no copy without an
+// escape).
 func forEachRawJSONMember(t gjson.Result, iterator func(key, value gjson.Result) bool) {
 	if !t.Exists() {
 		return
@@ -110,9 +116,10 @@ func firstRawJSONMember(object gjson.Result, name string) gjson.Result {
 	return found
 }
 
-// rawJSONStringValue is value.String() for a value from
-// forEachRawJSONMember: a string is unescaped here, once.
-func rawJSONStringValue(value gjson.Result) string {
+// rawJSONMemberString is value.String() for a value from
+// forEachRawJSONMember or firstRawJSONMember: a string is unescaped here
+// (no copy without an escape).
+func rawJSONMemberString(value gjson.Result) string {
 	if value.Type != gjson.String {
 		return value.String()
 	}
@@ -231,7 +238,7 @@ func rawJSONParseAny(json string, i int) (int, gjson.Result, bool) {
 			}
 			res.Raw = json[s:i]
 			res.Type = gjson.Number
-			res.Num, _ = strconv.ParseFloat(res.Raw, 64)
+			res.Num, _ = parseJSONNumberBounded(res.Raw)
 			return i, res, true
 		}
 	}
@@ -273,4 +280,151 @@ func rawJSONSquash(json string, i int) (int, string) {
 		i++
 	}
 	return i, json[s:]
+}
+
+// jsonNumberParseMaxBytes: a number literal longer than this is not handed
+// to strconv as sent (rr10). strconv.ParseFloat copies the whole literal
+// into its error when the value is out of range: a max_output_tokens of 16
+// M digits cost 144 MB in copies over the passes that parse it.
+const jsonNumberParseMaxBytes = 32
+
+// errJSONNumberSyntax: a long literal that is not a JSON number.
+var errJSONNumberSyntax = errors.New("json number: invalid syntax")
+
+// parseJSONNumberBounded is strconv.ParseFloat(raw, 64) for a JSON number
+// literal, without allocating for a long one: a literal of more than
+// jsonNumberParseMaxBytes bytes is first written as its 800 leading
+// significant digits, a sticky 1 when a later digit is not 0, and the
+// decimal exponent (saturated), on the stack. strconv keeps exactly 800
+// digits and a truncation flag itself, so it parses to the same float64,
+// rounding included; an exponent past the float64 range is still out of
+// range. A long literal that is not JSON number syntax
+// (strconv also takes hex and Inf forms) is a syntax error with value 0.
+func parseJSONNumberBounded(raw string) (float64, error) {
+	if len(raw) <= jsonNumberParseMaxBytes {
+		return strconv.ParseFloat(raw, 64)
+	}
+	var buf [shortJSONNumberMax]byte
+	short, ok := shortJSONNumber(raw, buf[:0])
+	if !ok {
+		return 0, errJSONNumberSyntax
+	}
+	if e := bytes.LastIndexByte(short, 'e'); e > 0 && len(short)-e > 4 && short[e+1] != '-' {
+		// 0.d... x 10^1000 or more: past float64's range without asking
+		// strconv, whose range error would copy the short form.
+		if short[0] == '-' {
+			return math.Inf(-1), errJSONNumberRange
+		}
+		return math.Inf(1), errJSONNumberRange
+	}
+	return strconv.ParseFloat(unsafe.String(unsafe.SliceData(short), len(short)), 64)
+}
+
+// errJSONNumberRange: a long literal past float64's range (the value is
+// ±Inf, as strconv gives it).
+var errJSONNumberRange = errors.New("json number: value out of range")
+
+// shortJSONNumberMax: sign, "0.", 801 digits, 'e' and the exponent.
+const shortJSONNumberMax = 832
+
+// shortJSONNumber writes the JSON number raw into dst as
+// [-]0.<digits>e<exp> with at most 801 significant digits; ok=false when
+// raw is not JSON number syntax.
+func shortJSONNumber(raw string, dst []byte) ([]byte, bool) {
+	const keep = 800         // strconv's decimal holds 800 digits
+	const expLimit = 1 << 20 // far past float64's range either way
+	i := 0
+	neg := false
+	if i < len(raw) && raw[i] == '-' {
+		neg, i = true, i+1
+	}
+	digits := func(from int) int {
+		for from < len(raw) && raw[from] >= '0' && raw[from] <= '9' {
+			from++
+		}
+		return from
+	}
+	intEnd := digits(i)
+	if intEnd == i || (raw[i] == '0' && intEnd-i > 1) {
+		return nil, false
+	}
+	intDigits, fracDigits := raw[i:intEnd], ""
+	i = intEnd
+	if i < len(raw) && raw[i] == '.' {
+		end := digits(i + 1)
+		if end == i+1 {
+			return nil, false
+		}
+		fracDigits, i = raw[i+1:end], end
+	}
+	exp := 0
+	if i < len(raw) && (raw[i] == 'e' || raw[i] == 'E') {
+		i++
+		expNeg := false
+		if i < len(raw) && (raw[i] == '+' || raw[i] == '-') {
+			expNeg, i = raw[i] == '-', i+1
+		}
+		end := digits(i)
+		if end == i {
+			return nil, false
+		}
+		for _, c := range raw[i:end] {
+			if exp < expLimit {
+				exp = exp*10 + int(c-'0')
+			}
+		}
+		if expNeg {
+			exp = -exp
+		}
+		i = end
+	}
+	if i != len(raw) {
+		return nil, false
+	}
+	// value = 0.<intDigits fracDigits> x 10^(len(intDigits)+exp)
+	point := len(intDigits) + exp
+	if neg {
+		dst = append(dst, '-')
+	}
+	dst = append(dst, '0', '.')
+	n, sticky := 0, false
+	for _, part := range [2]string{intDigits, fracDigits} {
+		for j := 0; j < len(part); j++ {
+			c := part[j]
+			switch {
+			case n == 0 && c == '0':
+				point-- // a leading zero
+			case n < keep:
+				dst = append(dst, c)
+				n++
+			case c != '0':
+				sticky = true
+			}
+		}
+	}
+	if n == 0 {
+		return append(dst, '0'), true
+	}
+	if sticky {
+		dst = append(dst, '1')
+	}
+	point = max(-expLimit, min(expLimit, point))
+	dst = append(dst, 'e')
+	return strconv.AppendInt(dst, int64(point), 10), true
+}
+
+// rawJSONRootMember is gjson.GetBytes(body, name) for a plain root member
+// name without its copies (rr10): GetBytes copies the value's Raw and gjson
+// parses a number with strconv.ParseFloat, which copies a literal that is
+// out of range (176 MB for a max_output_tokens of 16 M digits). The value
+// is read raw from a view of body (firstRawJSONMember, a number parsed by
+// parseJSONNumberBounded); only a string value is unescaped into Str,
+// which copies nothing unless it has an escape. The result must not be
+// kept past body.
+func rawJSONRootMember(body []byte, name string) gjson.Result {
+	v := firstRawJSONMember(parseRawJSONView(body), name)
+	if v.Type == gjson.String {
+		v.Str = rawJSONMemberString(v)
+	}
+	return v
 }

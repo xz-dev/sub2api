@@ -678,7 +678,7 @@ func openAIRequestBodyHasTools(body []byte) bool {
 	isAdditionalTools := func(item gjson.Result) bool {
 		return strings.TrimSpace(item.Get("type").String()) == "additional_tools" && nonEmptyRawJSONArray(item.Get("tools"))
 	}
-	input := root.Get("input")
+	input := firstRawJSONMember(root, "input")
 	if !input.IsArray() {
 		// Array() of a non-array value is that value alone.
 		return input.Exists() && isAdditionalTools(input)
@@ -712,7 +712,7 @@ func nonEmptyRawJSONArray(value gjson.Result) bool {
 // ids, and opaque extensions). Callers scope this normalization to OpenAI
 // destinations; compatible providers may still consume their own content.
 func normalizeOpenAIResponsesReasoningContentReplay(body []byte) ([]byte, bool, error) {
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.IsArray() {
 		return body, false, nil
 	}
@@ -769,7 +769,7 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 		return body, false, nil
 	}
 	root := parseRawJSONView(body)
-	input := root.Get("input")
+	input := firstRawJSONMember(root, "input")
 	if !input.IsArray() {
 		return body, false, nil
 	}
@@ -1205,7 +1205,15 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 	view := openAIRequestView{body: body}
 	var seen uint8
 	// parseRawJSONView reads body without copying; view keeps body alive for extracted strings.
-	parseRawJSONView(body).ForEach(func(key, value gjson.Result) bool {
+	// Raw members (rr10): Result.ForEach unescaped every root string,
+	// input and instructions included; only the fields read are unescaped.
+	forEachRawJSONMember(parseRawJSONView(body), func(key, value gjson.Result) bool {
+		if value.Type == gjson.String {
+			switch key.Str {
+			case "model", "stream", "prompt_cache_key", "previous_response_id", "service_tier":
+				value.Str = rawJSONMemberString(value)
+			}
+		}
 		switch key.Str {
 		case "model":
 			if seen&modelField == 0 {
@@ -1829,14 +1837,14 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 		return ""
 	}
 
-	instructions := gjson.GetBytes(body, "instructions")
+	instructions := firstRawJSONMember(parseRawJSONView(body), "instructions") // no copy (rr10)
 	if !instructions.Exists() {
 		return ""
 	}
 	if instructions.Type != gjson.String {
 		return "instructions_not_string"
 	}
-	if strings.TrimSpace(instructions.String()) == "" {
+	if rawJSONStringBlank(instructions.Raw) {
 		return "instructions_empty"
 	}
 	return ""
@@ -2476,7 +2484,7 @@ func openAIRequestBodyMayContainEmptyBase64InputImage(body []byte) bool {
 		return false
 	}
 	// A view of the body, and a walk that never unescapes a value (rr9).
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.Exists() {
 		return false
 	}

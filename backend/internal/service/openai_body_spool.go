@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
+	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	"github.com/cespare/xxhash/v2"
@@ -69,6 +72,89 @@ func deriveOpenAISessionHashesForRequest(c *gin.Context, sessionID string) (stri
 		}
 	}
 	return deriveOpenAISessionHashes(sessionID)
+}
+
+// hashOpenAIContentSessionSeed is
+// deriveOpenAISessionHashesForRequest(c, deriveOpenAIContentSessionSeed(body))
+// computed while the seed is written, so the seed, as large as the body
+// when it has raw: fields, is never held (rr10). ok=false: no seed.
+func hashOpenAIContentSessionSeed(c *gin.Context, body []byte) (currentHash, legacyHash string, ok bool) {
+	fields, ok := scanContentSessionSeedFields(body)
+	if !ok {
+		return "", "", false
+	}
+	sp, _ := requestBodySpoolFromGin(c)
+	h := newSeedHashWriter(sp)
+	_, _ = h.WriteString(contentSessionSeedPrefix)
+	if !writeContentSessionSeed(h, &fields) {
+		return "", "", false
+	}
+	currentHash, legacyHash = h.sums()
+	return currentHash, legacyHash, true
+}
+
+// seedHashWriter hashes a session seed as deriveOpenAISessionHashesForRequest
+// hashes the whole string: white space at the end is held back and dropped
+// (strings.TrimSpace; the seed starts with its prefix, never with space),
+// and with a spool the expanded seed is hashed when it holds a marker and
+// expands cleanly, else the seed as written. A marker never spans two
+// writes (each is a label or a whole value) and holds no white space.
+type seedHashWriter struct {
+	sp            *bodyspool.Spool
+	rawX, expX    *xxhash.Digest
+	rawS, expS    hash.Hash
+	raw, exp      io.Writer
+	marker        bool
+	expErr        error
+	pendingSpaces []string
+}
+
+func newSeedHashWriter(sp *bodyspool.Spool) *seedHashWriter {
+	h := &seedHashWriter{sp: sp, rawX: xxhash.New(), rawS: sha256.New()}
+	h.raw = io.MultiWriter(h.rawX, h.rawS)
+	if sp != nil {
+		h.expX, h.expS = xxhash.New(), sha256.New()
+		h.exp = io.MultiWriter(h.expX, h.expS)
+	}
+	return h
+}
+
+func (h *seedHashWriter) WriteString(s string) (int, error) {
+	end := len(strings.TrimRightFunc(s, unicode.IsSpace))
+	if end == 0 {
+		h.pendingSpaces = append(h.pendingSpaces, s)
+		return len(s), nil
+	}
+	for _, p := range h.pendingSpaces {
+		h.emit(p)
+	}
+	h.pendingSpaces = h.pendingSpaces[:0]
+	h.emit(s[:end])
+	if end < len(s) {
+		h.pendingSpaces = append(h.pendingSpaces, s[end:])
+	}
+	return len(s), nil
+}
+
+func (h *seedHashWriter) emit(s string) {
+	// The hashes only read the bytes: a view, no copy.
+	_, _ = h.raw.Write(unsafe.Slice(unsafe.StringData(s), len(s)))
+	if h.sp == nil {
+		return
+	}
+	if h.sp.Contains(s) {
+		h.marker = true
+	}
+	if h.expErr == nil {
+		h.expErr = h.sp.WriteExpanded(h.exp, s)
+	}
+}
+
+func (h *seedHashWriter) sums() (currentHash, legacyHash string) {
+	if h.marker && h.expErr == nil {
+		return fmt.Sprintf("%016x", h.expX.Sum64()), hex.EncodeToString(h.expS.Sum(nil))
+	}
+	return fmt.Sprintf("%016x", h.rawX.Sum64()), hex.EncodeToString(h.rawS.Sum(nil))
 }
 
 // newOpenAIUpstreamBodyRequest builds the upstream POST. With a spool the

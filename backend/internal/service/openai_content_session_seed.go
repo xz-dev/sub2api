@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"io"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
@@ -16,28 +17,65 @@ const contentSessionSeedPrefix = "compat_cs_"
 // only from request fields that remain stable across independent prompts.
 const contentStablePrefixSessionSeedPrefix = "compat_csp_"
 
+// contentSessionSeed field indexes.
+const (
+	contentSeedModelField = iota
+	contentSeedToolsField
+	contentSeedFunctionsField
+	contentSeedInstructionsField
+	contentSeedMessagesField
+	contentSeedInputField
+	contentSessionSeedFieldCount
+	allContentSessionSeedFields = 1<<contentSessionSeedFieldCount - 1
+)
+
+// contentSessionSeedFields are the root members the seed is built from
+// (raw views into the body).
+type contentSessionSeedFields [contentSessionSeedFieldCount]gjson.Result
+
 // deriveOpenAIContentSessionSeed builds a stable session seed from an
 // OpenAI-format request body. Only fields constant across conversation turns
 // are included: model, tools/functions definitions, the leading system/developer
 // prompt prefix in Chat messages, instructions (Responses API), and the first
 // user message.
 // Supports both Chat Completions (messages) and Responses API (input).
+//
+// The seed can be as large as the body (raw: fields). It is built in two
+// passes, the first only measuring it, so it is allocated once at its exact
+// size (rr10: Builder growth cost about 5 x the seed); each pass has its own
+// budget and makes the same decisions. GenerateSessionHash hashes the seed
+// as it is written instead (hashOpenAIContentSessionSeed) and never holds it.
 func deriveOpenAIContentSessionSeed(body []byte) string {
-	if len(body) == 0 {
+	fields, ok := scanContentSessionSeedFields(body)
+	if !ok {
 		return ""
 	}
+	var n contentSeedLen
+	if !writeContentSessionSeed(&n, &fields) {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(contentSessionSeedPrefix) + int(n))
+	_, _ = b.WriteString(contentSessionSeedPrefix)
+	writeContentSessionSeed(&b, &fields)
+	return b.String()
+}
 
-	const (
-		modelField = iota
-		toolsField
-		functionsField
-		instructionsField
-		messagesField
-		inputField
-		contentSessionSeedFieldCount
-		allContentSessionSeedFields = 1<<contentSessionSeedFieldCount - 1
-	)
-	var fields [contentSessionSeedFieldCount]gjson.Result
+// contentSeedLen counts what is written to it.
+type contentSeedLen int
+
+func (n *contentSeedLen) WriteString(s string) (int, error) {
+	*n += contentSeedLen(len(s))
+	return len(s), nil
+}
+
+// scanContentSessionSeedFields finds the seed's root members (the first of
+// each name), reading them raw: a root string is unescaped only when the
+// seed is written, within its budget (rr10).
+func scanContentSessionSeedFields(body []byte) (fields contentSessionSeedFields, ok bool) {
+	if len(body) == 0 {
+		return fields, false
+	}
 	var seen uint8
 	// Match gjson.GetBytes by starting at the first root container, even when
 	// malformed input has a non-JSON prefix.
@@ -48,14 +86,14 @@ func deriveOpenAIContentSessionSeed(body []byte) string {
 			root = body[i:]
 			goto scanRoot
 		case '[':
-			return ""
+			return fields, false
 		}
 	}
-	return ""
+	return fields, false
 
 scanRoot:
 	nextKeyOffset := 1
-	parseRawJSONView(root).ForEach(func(key, value gjson.Result) bool {
+	forEachRawJSONMember(parseRawJSONView(root), func(key, value gjson.Result) bool {
 		if key.Index < nextKeyOffset || key.Index > len(root) {
 			return false
 		}
@@ -69,17 +107,17 @@ scanRoot:
 		field := -1
 		switch key.Str {
 		case "model":
-			field = modelField
+			field = contentSeedModelField
 		case "tools":
-			field = toolsField
+			field = contentSeedToolsField
 		case "functions":
-			field = functionsField
+			field = contentSeedFunctionsField
 		case "instructions":
-			field = instructionsField
+			field = contentSeedInstructionsField
 		case "messages":
-			field = messagesField
+			field = contentSeedMessagesField
 		case "input":
-			field = inputField
+			field = contentSeedInputField
 		}
 		if field < 0 {
 			return true
@@ -91,45 +129,44 @@ scanRoot:
 		}
 		return seen != allContentSessionSeedFields
 	})
+	return fields, true
+}
 
-	// The prefix goes first so the (possibly body-sized) seed is not copied
-	// again at the end.
-	var b strings.Builder
-	_, _ = b.WriteString(contentSessionSeedPrefix)
+// writeContentSessionSeed writes the seed after contentSessionSeedPrefix
+// to b and reports whether it wrote anything (an empty seed is no seed).
+// Every canonical form and unescape is paid from one fresh budget
+// (derivedKeyBudgetBytes); past it a field is written "raw:" and as sent.
+func writeContentSessionSeed(w io.StringWriter, fields *contentSessionSeedFields) bool {
+	budget := newDerivedKeyBudget()
+	b := &contentSeedWriter{w: w}
 
-	if model := fields[modelField].String(); model != "" {
-		_, _ = b.WriteString("model=")
-		_, _ = b.WriteString(model)
-	}
+	writeContentSeedString(b, budget, "model=", fields[contentSeedModelField])
 
-	if tools := fields[toolsField]; tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
+	if tools := fields[contentSeedToolsField]; tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
 		_, _ = b.WriteString("|tools=")
-		writeContentSeedJSON(&b, tools.Raw)
+		writeContentSeedJSON(b, budget, tools.Raw)
 	}
 
-	if funcs := fields[functionsField]; funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
+	if funcs := fields[contentSeedFunctionsField]; funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
 		_, _ = b.WriteString("|functions=")
-		writeContentSeedJSON(&b, funcs.Raw)
+		writeContentSeedJSON(b, budget, funcs.Raw)
 	}
 
-	if instr := fields[instructionsField].String(); instr != "" {
-		_, _ = b.WriteString("|instructions=")
-		_, _ = b.WriteString(instr)
-	}
+	writeContentSeedString(b, budget, "|instructions=", fields[contentSeedInstructionsField])
 
 	firstUserCaptured := false
 
-	msgs := fields[messagesField]
+	msgs := fields[contentSeedMessagesField]
 	if msgs.Exists() && msgs.IsArray() {
 		systemPrefixOpen := true
-		msgs.ForEach(func(_, msg gjson.Result) bool {
+		forEachRawJSONMember(msgs, func(_, msg gjson.Result) bool {
 			role := msg.Get("role").String()
 			switch role {
 			case "system", "developer":
 				if systemPrefixOpen {
 					_, _ = b.WriteString("|system=")
 					if c := firstRawJSONMember(msg, "content"); c.Exists() {
-						writeContentSeedJSON(&b, c.Raw)
+						writeContentSeedJSON(b, budget, c.Raw)
 					}
 				}
 			case "user":
@@ -137,7 +174,7 @@ scanRoot:
 				if !firstUserCaptured {
 					_, _ = b.WriteString("|first_user=")
 					if c := firstRawJSONMember(msg, "content"); c.Exists() {
-						writeContentSeedJSON(&b, c.Raw)
+						writeContentSeedJSON(b, budget, c.Raw)
 					}
 					firstUserCaptured = true
 				}
@@ -146,32 +183,35 @@ scanRoot:
 			}
 			return true
 		})
-	} else if inp := fields[inputField]; inp.Exists() {
+	} else if inp := fields[contentSeedInputField]; inp.Exists() {
 		if inp.Type == gjson.String {
-			_, _ = b.WriteString("|input=")
-			_, _ = b.WriteString(inp.String())
+			writeContentSeedString(b, budget, "|input=", inp)
 		} else if inp.IsArray() {
-			inp.ForEach(func(_, item gjson.Result) bool {
+			forEachRawJSONMember(inp, func(_, item gjson.Result) bool {
 				role := item.Get("role").String()
 				switch role {
 				case "system", "developer":
 					_, _ = b.WriteString("|system=")
 					if c := firstRawJSONMember(item, "content"); c.Exists() {
-						writeContentSeedJSON(&b, c.Raw)
+						writeContentSeedJSON(b, budget, c.Raw)
 					}
 				case "user":
 					if !firstUserCaptured {
 						_, _ = b.WriteString("|first_user=")
 						if c := firstRawJSONMember(item, "content"); c.Exists() {
-							writeContentSeedJSON(&b, c.Raw)
+							writeContentSeedJSON(b, budget, c.Raw)
 						}
 						firstUserCaptured = true
 					}
 				}
 				if !firstUserCaptured && item.Get("type").String() == "input_text" {
 					_, _ = b.WriteString("|first_user=")
-					if text := item.Get("text").String(); text != "" {
-						_, _ = b.WriteString(text)
+					text := firstRawJSONMember(item, "text")
+					if s, ok := budget.stringValue(text); !ok {
+						_, _ = b.WriteString("raw:")
+						_, _ = b.WriteString(text.Raw)
+					} else if s != "" {
+						_, _ = b.WriteString(s)
 					}
 					firstUserCaptured = true
 				}
@@ -179,11 +219,18 @@ scanRoot:
 			})
 		}
 	}
+	return b.wrote
+}
 
-	if b.Len() == len(contentSessionSeedPrefix) {
-		return ""
-	}
-	return b.String()
+// contentSeedWriter notes whether anything was written.
+type contentSeedWriter struct {
+	w     io.StringWriter
+	wrote bool
+}
+
+func (c *contentSeedWriter) WriteString(s string) (int, error) {
+	c.wrote = true
+	return c.w.WriteString(s)
 }
 
 // contentSeedDecodeMaxValues: the most JSON values a content-seed field
@@ -193,7 +240,7 @@ scanRoot:
 // then 6); 4096 values keep it under about 600 KiB.
 const contentSeedDecodeMaxValues = 4096
 
-// contentSeedDecodeMaxBytes: the most bytes a JSON value may have to be
+// contentSeedDecodeMaxBytes: the most bytes one JSON value may have to be
 // decoded on the verified-raw path without a charge (content seed,
 // transcript, tool schema, turn metadata). The value cap alone let one
 // large string through (rr9: a 16 MiB first user message of one escaped
@@ -201,15 +248,18 @@ const contentSeedDecodeMaxValues = 4096
 // decode copies the string and the re-encode writes it again, up to 6 x
 // for < > & (json.Marshal escapes them). Measured at 32 KiB: about 170 KB
 // allocated for escaped text, about 1.2 MB for a string of only '<'. It
-// must not exceed bodyspool's threshold T (64 KiB by default, the smallest
+// must not exceed bodyspool's threshold T (at least 32 KiB, the smallest
 // spooled string), which keeps the decision the same on the skeleton and
-// on the whole body; see contentSeedDecodeBounded.
+// on the whole body; see derivedKeyBudget. The per-value caps do not bound
+// a request of many such values: the seed and the transcript also pay
+// every decode from a derivedKeyBudget (rr10).
 const contentSeedDecodeMaxBytes = 32 << 10
 
 // contentSeedDecodeBounded reports whether the JSON text raw may be
-// decoded into its canonical form: at most contentSeedDecodeMaxBytes bytes
-// and contentSeedDecodeMaxValues values, and no spool marker. A field with
-// a spooled string is above the byte cap on the whole body (the string
+// decoded into its canonical form by a per-value site (tool schema, turn
+// metadata): at most contentSeedDecodeMaxBytes bytes and
+// contentSeedDecodeMaxValues values, and no spool marker. A field with a
+// spooled string is above the byte cap on the whole body (the string
 // alone has at least T bytes), so the marker test gives the skeleton the
 // same answer; a field without one is the same bytes on both. (A body
 // that holds the text \u0000lrc itself is treated alike on both.)
@@ -219,44 +269,48 @@ func contentSeedDecodeBounded(raw string) bool {
 }
 
 // writeContentSeedJSON writes one field of the content session seed:
-// canonical JSON (decoded and re-encoded, keys sorted) when
-// contentSeedDecodeBounded, else "raw:" and the field as sent, which
-// allocates nothing beyond the copy. The decision is the same on the
-// skeleton and on the whole body, and a raw field's markers are expanded
-// when the seed is hashed (deriveOpenAISessionHashesForRequest), so both
-// give the same hash. A field above either cap gets a seed part that
-// differs from the old canonical one (one sticky-session miss after the
-// upgrade) and that is stable while the client resends the same bytes.
-func writeContentSeedJSON(b *strings.Builder, raw string) {
-	if !contentSeedDecodeBounded(raw) {
-		_, _ = b.WriteString("raw:")
-		_, _ = b.WriteString(raw)
+// canonical JSON (decoded and re-encoded, keys sorted) when the budget
+// allows it (derivedKeyBudget.canonicalJSON), else "raw:" and the field as
+// sent, which allocates nothing beyond the copy. The decision is the same
+// on the skeleton and on the whole body, and a raw field's markers are
+// expanded when the seed is hashed (deriveOpenAISessionHashesForRequest),
+// so both give the same hash. A field above a cap or past the budget gets
+// a seed part that differs from the old canonical one (one sticky-session
+// miss after the upgrade) and that is stable while the client resends the
+// same bytes.
+func writeContentSeedJSON(b io.StringWriter, budget *derivedKeyBudget, raw string) {
+	if canonical, ok := budget.canonicalJSON(raw); ok {
+		_, _ = b.WriteString(canonical)
 		return
 	}
-	_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(raw)))
+	_, _ = b.WriteString("raw:")
+	_, _ = b.WriteString(raw)
+}
+
+// writeContentSeedString writes label and the string value of v (gjson's
+// String of it) when that is not empty, or label, "raw:" and v as sent
+// when the budget does not allow the unescape (derivedKeyBudget.stringValue;
+// an escape-free string is a view and always allowed).
+func writeContentSeedString(b io.StringWriter, budget *derivedKeyBudget, label string, v gjson.Result) {
+	if !v.Exists() {
+		return
+	}
+	s, ok := budget.stringValue(v)
+	if ok && s == "" {
+		return
+	}
+	_, _ = b.WriteString(label)
+	if !ok {
+		_, _ = b.WriteString("raw:")
+		s = v.Raw
+	}
+	_, _ = b.WriteString(s)
 }
 
 // rawJSONValuesAbove reports whether the JSON text raw has more than max
-// values (counted as the '{', '[' and ',' outside strings, plus one).
+// values (rawJSONValueCount).
 func rawJSONValuesAbove(raw string, max int) bool {
-	n, inString, escaped := 1, false, false
-	for i := 0; i < len(raw); i++ {
-		ch := raw[i]
-		switch {
-		case escaped:
-			escaped = false
-		case inString:
-			escaped = ch == '\\'
-			inString = ch != '"'
-		case ch == '"':
-			inString = true
-		case ch == '{' || ch == '[' || ch == ',':
-			if n++; n > max {
-				return true
-			}
-		}
-	}
-	return false
+	return rawJSONValueCount(raw, max) > max
 }
 
 // deriveOpenAIAnchoredContentSessionSeed returns the legacy content-derived

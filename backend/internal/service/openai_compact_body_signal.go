@@ -258,7 +258,7 @@ func HasCompactionTriggerInInput(body []byte) bool {
 		return false
 	}
 	// A read-only view: GetBytes would copy all of input (review rr3).
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.IsArray() {
 		return false
 	}
