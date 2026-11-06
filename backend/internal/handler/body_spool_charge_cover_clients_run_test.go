@@ -27,6 +27,13 @@ var coverClientsOffList = map[string]string{
 	"client_sdk_tool_local_shell":      "local_shell_call ids are deleted by the input-ID sanitizer (prefix fc_ expected): forwarded changed, k 3.22",
 }
 
+// coverClientsCharged: listed stress shapes that the body path charges the
+// k_conv top-up on purpose before a bounded-but-large decode.
+var coverClientsCharged = map[string]string{
+	"stress_tools_json_schema":            "skeleton rewrite above 4096 values (rewriteOpenAIRequestSkeleton)",
+	"stress_additional_tools_json_schema": "same",
+}
+
 // coverClientsRewritten: listed client shapes whose body the gateway
 // rewrites on purpose (on raw JSON); every other listed shape must reach
 // the upstream byte for byte.
@@ -87,6 +94,10 @@ func TestBodySpoolClientShapesRawPath(t *testing.T) {
 				return
 			}
 			assert.Equal(t, http.StatusOK, r.status, r.reply)
+			if _, charged := coverClientsCharged[cl.name]; charged {
+				assert.GreaterOrEqual(t, chargeK, bodySpoolRuntimeFor(srv.cfg).cfg.KConv-0.5, "the k_conv top-up was taken")
+				return
+			}
 			kSkel := bodySpoolRuntimeFor(srv.cfg).cfg.KSkel
 			assert.LessOrEqual(t, chargeK, kSkel+0.5, "a listed shape takes the k_skel charge")
 			assert.LessOrEqual(t, k, kSkel, "a listed shape stays within k_skel")

@@ -2,6 +2,7 @@ package service
 
 import (
 	"strings"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 )
@@ -16,7 +17,13 @@ import (
 //
 // ok=false (nothing done) when the body is not a valid JSON object or has
 // a duplicate root name; the caller then decodes all of it.
-func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool) (out []byte, changed, ok bool, err error) {
+//
+// chargeConversion is taken before the decode when the skeleton has more
+// than contentSeedDecodeMaxValues JSON values (rr6 follow-up: a large tools
+// array or additional_tools item of many small parts cost about 20 x its
+// bytes on the verified-raw path, charged k_skel); a smaller skeleton
+// costs at most about 600 KiB.
+func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, chargeConversion func() error) (out []byte, changed, ok bool, err error) {
 	root := parseRawJSONView(body)
 	if !root.IsObject() || !gjson.ValidBytes(body) {
 		return body, false, false, nil
@@ -55,6 +62,11 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool) (ou
 		return true
 	})
 	skeleton = append(skeleton, '}')
+	if rawJSONValuesAbove(unsafe.String(unsafe.SliceData(skeleton), len(skeleton)), contentSeedDecodeMaxValues) {
+		if err := chargeConversion(); err != nil {
+			return body, false, true, err
+		}
+	}
 	var decoded map[string]any
 	if err := decodeOpenAIJSONUseNumber(skeleton, &decoded); err != nil {
 		return body, false, true, err
