@@ -164,9 +164,8 @@ func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex
 }
 
 // TestBodySpoolChargeCoversAllocation (task 7.3a): for every route that
-// takes a body, on every account kind, and every corpus shape at 2 and
-// 8 MiB (16 MiB on passthrough), the live heap growth of the request never
-// exceeds the bytes it has charged by more than chargeCoverAllowance. A
+// takes a body, on every account kind, and every corpus shape at 2, 8 and
+// 16 MiB, the live heap growth of the request never exceeds the bytes it has charged by more than chargeCoverAllowance. A
 // 413 or 503 passes if nothing reached the upstream and the heap stayed
 // within the charge (no decode before the refusal). Any other status means
 // the case did not exercise its route and fails.
@@ -211,10 +210,10 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 				return coverBody(p, coverBases[0], n, model, m.root, m.item)
 			}})
 		}
-		sizes := []int{2 << 20, 8 << 20}
-		if cb.passthrough {
-			sizes = append(sizes, 16<<20)
-		}
+		// 16 MiB is S; a converted or fully decoded request is charged
+		// k_conv, which the 8 GiB fake cgroup leaves room for, so every
+		// route runs at every size.
+		sizes := []int{2 << 20, 8 << 20, 16 << 20}
 		var srv *coverServer
 		for i, sh := range shapes {
 			sz := sizes
