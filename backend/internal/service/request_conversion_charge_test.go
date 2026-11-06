@@ -85,8 +85,8 @@ var chargeExempt = map[string]string{
 // parameter, or, only where noChargeAllowed says so, NoConversionCharge.
 //
 // What it cannot see (the charge-cover property test is the primary gate):
-// a decode not named here (409 json.Unmarshal sites; only listed converters
-// and DecodeFullRequestBody are tracked); a charge whose error is ignored;
+// a decode not named here (the other direct decodes are classified by
+// TestRequestDecodeSitesAreClassified instead); a charge whose error is ignored;
 // a charger passed through a struct field, a closure variable or a function
 // value; calls through an interface or a method value; a closure defined
 // before the charge and called after it (read as before); name collisions
