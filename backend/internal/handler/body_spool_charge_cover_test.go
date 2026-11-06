@@ -324,7 +324,8 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 					if cb.sessionBlock && !guardRefused {
 						assert.Greater(t, srv.up.blockScopeHits.Load(), hits, "the session-block transcript lookup did not run")
 					}
-					logCoverResult(t, name, r)
+					mode := coverAssertMode(r, bodySpoolRuntimeFor(srv.cfg).cfg.KConv)
+					logCoverResult(t, name, r, mode)
 					if r.reply != "" {
 						t.Logf("COVER %s reply %s", name, r.reply)
 					}
@@ -350,7 +351,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 						t.Logf("COVER-INFO %s fixed overhead above charge %d B (total alloc)", name, r.TotalAlloc-r.PeakCharge)
 						return
 					}
-					assertChargeCovers(t, r.chargeCoverReading)
+					assertChargeCoversMode(t, r.chargeCoverReading, mode)
 				})
 			}
 		}
@@ -365,11 +366,37 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 // logCoverResult logs one case: k is total allocation / body, charge_k
 // the peak charge / body; peak_heap and excess (live heap above the
 // charge) are the sampled live figures, for information.
-func logCoverResult(t *testing.T, name string, r coverResult) {
+func logCoverResult(t *testing.T, name string, r coverResult, mode string) {
 	t.Helper()
-	t.Logf("COVER %s status %d calls %d bytes %d total_alloc %d k %.2f charge_k %.2f peak_heap %d peak_charge %d excess %d samples %d",
+	t.Logf("COVER %s status %d calls %d bytes %d total_alloc %d k %.2f charge_k %.2f peak_heap %d peak_charge %d excess %d samples %d mode %s",
 		name, r.status, r.calls, r.bytes, r.TotalAlloc, float64(r.TotalAlloc)/float64(max(r.bytes, 1)),
-		float64(r.PeakCharge)/float64(max(r.bytes, 1)), r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
+		float64(r.PeakCharge)/float64(max(r.bytes, 1)), r.PeakHeap, r.PeakCharge, r.Excess, r.Samples, mode)
+}
+
+// coverAssertMode (rr10, supervisor decision A): "total" asserts total
+// allocation <= peak charge, for every on-list case (k_skel, k_path);
+// "live" asserts the live heap <= peak
+// charge, for a case charged k_conv (peak charge >= (k_conv - 1) x body),
+// because k_conv was derived from the live heap. The k_conv cases'
+// total-alloc k is logged for the converter rework (M3); /v1/messages is
+// one of them, its linearity is TestMessagesTotalAllocIsLinear.
+func coverAssertMode(r coverResult, kConv float64) string {
+	if float64(r.PeakCharge) < (kConv-1)*float64(max(r.bytes, 1)) {
+		return "total"
+	}
+	return "live"
+}
+
+// assertChargeCoversMode asserts r by mode (coverAssertMode).
+func assertChargeCoversMode(t *testing.T, r chargeCoverReading, mode string) {
+	t.Helper()
+	if mode == "total" {
+		assertChargeCovers(t, r)
+		return
+	}
+	assert.LessOrEqual(t, r.PeakHeap, r.PeakCharge+chargeCoverAllowance,
+		"live heap peak %d B is %d B above the peak charge %d (allowance %d; total alloc %d)",
+		r.PeakHeap, r.PeakHeap-r.PeakCharge, r.PeakCharge, chargeCoverAllowance, r.TotalAlloc)
 }
 
 // assertChargeCovers: the request allocated in total at most its peak
