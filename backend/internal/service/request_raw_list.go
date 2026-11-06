@@ -35,8 +35,17 @@ import (
 
 // rawRootMembers: root members of a Responses body, each with the check its
 // value must pass ("" = verified). Measured: gen_root_<name>, k <= 2.3.
+//
+// Identifier members (rawIdent*, review rr10): an identifier, mode or
+// metadata value is read by many gjson Get sites, each of which unescapes
+// it, so a body-sized one costs k ~13 (adv_leaf_root_prompt_cache_key_*,
+// adv_leaf_root_reasoning_*_reasoning_effort, adv_leaf_item_*_id_id). Such
+// a value is capped at rawIdentMaxBytes raw bytes; above it the request is
+// off the list (k_conv). Content-bearing members (input, instructions,
+// text, arguments, output, encrypted_content, summary text, image and file
+// data, tool descriptions and parameters) are never capped.
 var rawRootMembers = map[string]func(string) string{
-	"model":                  rawString,
+	"model":                  rawIdentString,
 	"input":                  rawInput,
 	"instructions":           rawString,
 	"stream":                 rawBool,
@@ -45,29 +54,29 @@ var rawRootMembers = map[string]func(string) string{
 	"parallel_tool_calls":    rawBool, // raw rewrite (normalizeOpenAIParallelToolCallsWithoutTools)
 	"tools":                  rawTools,
 	"tool_choice":            rawAny,
-	"reasoning":              rawObject,
+	"reasoning":              rawReasoning,
 	"include":                rawArray,
 	"text":                   rawObject, // json_schema: skeleton rewrite, no input decode (gen_root_text_json_schema)
-	"metadata":               rawObject,
+	"metadata":               rawMetadata,
 	"stream_options":         rawObject,
 	"client_metadata":        rawObject,
-	"prompt_cache_key":       rawString,
-	"prompt_cache_retention": rawAny, // deleted for non-Codex clients by one sjson patch
-	"prompt_cache_options":   rawAny, // same
-	"safety_identifier":      rawAny, // same
-	"previous_response_id":   rawString,
-	"service_tier":           rawAny,
-	"user":                   rawAny,
-	"truncation":             rawAny,
+	"prompt_cache_key":       rawIdentString,
+	"prompt_cache_retention": rawAny,      // deleted for non-Codex clients by one sjson patch
+	"prompt_cache_options":   rawAny,      // same
+	"safety_identifier":      rawIdentAny, // same
+	"previous_response_id":   rawIdentString,
+	"service_tier":           rawIdentAny,
+	"user":                   rawIdentAny,
+	"truncation":             rawIdentAny,
 	"max_output_tokens":      rawNumber,
 	"temperature":            rawNumber,
 	"top_p":                  rawNumber,
 	"top_logprobs":           rawNumber,
 	// Client-shape corpus (rr6 follow-up, TestBodySpoolClientShapesRawPath,
 	// 16 MiB, API-key force_responses, forwarded unchanged):
-	"max_tool_calls":     rawNumber, // client_sdk_max_tool_calls k 3.01
-	"conversation":       rawAny,    // client_sdk_conversation k 3.22
-	"context_management": rawArray,  // client_sdk_context_management k 3.22
+	"max_tool_calls":     rawNumber,       // client_sdk_max_tool_calls k 3.01
+	"conversation":       rawConversation, // client_sdk_conversation k 3.22
+	"context_management": rawArray,        // client_sdk_context_management k 3.22
 }
 
 // rawItemTypes: input item types (an item's last "type" member; an item
@@ -306,6 +315,95 @@ func rawStr(v string) (string, bool) {
 
 func rawAny(string) string { return "" }
 
+// rawIdentMaxBytes: the cap on an identifier member's raw bytes (a
+// string's bytes between the quotes, as sent; any other value's whole raw
+// text).
+const rawIdentMaxBytes = 4 << 10
+
+func rawIdentLen(v string) int {
+	if len(v) >= 2 && v[0] == '"' {
+		return len(v) - 2
+	}
+	return len(v)
+}
+
+// rawIdent: "" when v is within rawIdentMaxBytes.
+func rawIdent(v string) string {
+	if rawIdentLen(v) > rawIdentMaxBytes {
+		return "longer than 4096 bytes"
+	}
+	return ""
+}
+
+func rawIdentAny(v string) string { return rawIdent(v) }
+
+func rawIdentString(v string) string {
+	if r := rawString(v); r != "" {
+		return r
+	}
+	return rawIdent(v)
+}
+
+// rawConversation: a conversation id, or an object of ids ({"id":...}),
+// each within the cap.
+func rawConversation(v string) (reason string) {
+	if rawFirst(v) != '{' {
+		return rawIdent(v)
+	}
+	forEachRawMember(v, func(k, m string) bool {
+		if r := rawIdent(m); r != "" {
+			reason = rawReasonName(k) + " " + r
+		}
+		return reason == ""
+	})
+	return reason
+}
+
+// rawReasoning: the reasoning object; its effort and summary modes within
+// the cap.
+func rawReasoning(v string) (reason string) {
+	if r := rawObject(v); r != "" || v == "null" {
+		return r
+	}
+	forEachRawMember(v, func(k, m string) bool {
+		if k == "effort" || k == "summary" {
+			if r := rawIdent(m); r != "" {
+				reason = k + " " + r
+			}
+		}
+		return reason == ""
+	})
+	return reason
+}
+
+// rawMetadata: the metadata object; every key and value within the cap.
+func rawMetadata(v string) (reason string) {
+	if r := rawObject(v); r != "" || v == "null" {
+		return r
+	}
+	i := rawSkipSpace(v, 1)
+	for i < len(v) && v[i] == '"' {
+		end := rawValueEnd(v, i)
+		if end-i-2 > rawIdentMaxBytes {
+			return "key longer than 4096 bytes"
+		}
+		i = rawSkipSpace(v, end)
+		i = rawSkipSpace(v, i+1) // ':'
+		end = rawValueEnd(v, i)
+		if r := rawIdent(v[i:end]); r != "" {
+			return "value " + r
+		}
+		i = rawSkipSpace(v, end)
+		if i < len(v) && v[i] == ',' {
+			i = rawSkipSpace(v, i+1)
+		}
+	}
+	return ""
+}
+
+// rawItemIdentMembers: item members capped at rawIdentMaxBytes.
+var rawItemIdentMembers = map[string]bool{"id": true, "call_id": true, "status": true, "name": true, "namespace": true}
+
 func rawFirst(v string) byte {
 	if v == "" {
 		return 0
@@ -371,6 +469,7 @@ func rawItem(item string) string {
 	var typ string
 	var namespace string
 	hasType, hasRole, hasNamespace, nameEscaped := false, false, false, false
+	longIdent := ""
 	// Member names, for duplicates: an item with a duplicate name is
 	// decoded alone by the store=false replay and the input-ID sanitizer.
 	var seen [32]string
@@ -395,11 +494,16 @@ func rawItem(item string) string {
 		case `\`:
 			nameEscaped = true
 		}
+		if longIdent == "" && rawItemIdentMembers[k] && rawIdent(v) != "" {
+			longIdent = k
+		}
 		return true
 	})
 	switch {
 	case nameEscaped:
 		return "item member name with an escape"
+	case longIdent != "":
+		return "item " + longIdent + " longer than 4096 bytes"
 	case n > len(seen):
 		return "item with more than 32 members"
 	case dup != "":
