@@ -65,7 +65,7 @@ func TestDerivedKeyBudgetBoundsCanonicalWork(t *testing.T) {
 		var seed string
 		seedAlloc := totalAllocOf(func() { seed = deriveOpenAIContentSessionSeed(body) })
 		require.Less(t, seedAlloc, uint64(3*len(seed)+4<<20), "%s %q %d: seed %d B for a %d B seed", tc.role, tc.unit, tc.item, seedAlloc, len(seed))
-		keysAlloc := totalAllocOf(func() { _ = deriveOpenAICyberTranscriptBlockKeys(1, body) })
+		keysAlloc := totalAllocOf(func() { _ = CyberSessionTranscriptBlocks(1, body) })
 		// 256 lookup keys of 64 hex bytes each, plus the budget's work.
 		require.Less(t, keysAlloc, uint64(4<<20), "%s %q %d: transcript %d B", tc.role, tc.unit, tc.item, keysAlloc)
 	}

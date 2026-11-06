@@ -46,7 +46,7 @@ func runCoverWSReadCases(t *testing.T, only string) int {
 
 			var out wsReadOutcome
 			r := measureChargeCover(charged, func() { out = sendWSMessage(t, srv, msg) })
-			logCoverResult(t, name, coverResult{chargeCoverReading: r, status: int(out.closeCode), bytes: len(msg)})
+			logCoverResult(t, name, coverResult{chargeCoverReading: r, status: int(out.closeCode), bytes: len(msg)}, "total")
 			assert.Equal(t, "request_too_large", gjson.Get(out.event, "error.code").String(), out.event)
 			assert.Equal(t, "sub2api", gjson.Get(out.event, "error.hop").String())
 			assert.EqualValues(t, size, gjson.Get(out.event, "error.limit_bytes").Int())

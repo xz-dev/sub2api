@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,9 +18,9 @@ func TestCodexCallOutputGateSkipsDeclaredToolsWithoutCandidate(t *testing.T) {
 	require.False(t, mayContainCodexCallOutputCandidate(body, "automation_update"))
 	require.False(t, mayContainCodexCallOutputCandidate(body, "create_thread", "send_message_to_thread"))
 	for name, normalize := range map[string]func([]byte) ([]byte, bool){
-		"untrusted":  normalizeCodexUntrustedContext,
-		"automation": normalizeCodexAutomationBootstrap,
-		"delegation": normalizeCodexDelegationBootstrap,
+		"untrusted":  normalizeCodexUntrustedContextUncharged,
+		"automation": normalizeCodexAutomationBootstrapUncharged,
+		"delegation": normalizeCodexDelegationBootstrapUncharged,
 	} {
 		t.Run(name, func(t *testing.T) {
 			allocs := testing.AllocsPerRun(10, func() {
@@ -53,7 +55,7 @@ func TestCodexCallOutputGateAdmitsEveryRewrite(t *testing.T) {
 			parts = append(parts, items[rng.Intn(len(items))])
 		}
 		body := []byte(`{"model":"gpt-5","tools":[{"type":"function","name":"automation_update"}],"input":[` + strings.Join(parts, ",") + `]}`)
-		_, rewritten := normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate, false)
+		_, rewritten, _ := normalizeCodexCallOutputBootstrap(service.NoConversionCharge, body, isCodexAutomationCandidate, false)
 		if rewritten {
 			rewrites++
 			require.True(t, mayContainCodexCallOutputCandidate(body, "automation_update"), "%s", body)

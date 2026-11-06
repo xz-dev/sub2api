@@ -67,7 +67,7 @@ func coverSessionBlockDeps(t *testing.T, up *coverUpstream) (service.GatewayCach
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	scope := cyberSessionScopeKey(99, c)
 	require.NotEmpty(t, scope)
-	require.NoError(t, store.SetCyberSessionBlocked(context.Background(), scope, []string{"cover-unrelated-block"}, time.Hour))
+	require.NoError(t, store.SetCyberSessionBlocked(context.Background(), service.CyberSessionBlock{APIKeyID: 99, ScopeKey: scope, Keys: []string{"cover-unrelated-block"}, TranscriptLengths: []int{1}}, time.Hour))
 	settings := service.NewSettingService(&contentModerationHandlerSettingRepo{values: map[string]string{
 		service.SettingKeyCyberSessionBlockEnabled:    "true",
 		service.SettingKeyCyberSessionBlockTTLSeconds: "3600",
@@ -83,16 +83,16 @@ type coverBlockCache struct {
 	hits  *atomic.Int32
 }
 
-func (c coverBlockCache) SetCyberSessionBlocked(ctx context.Context, scopeKey string, keys []string, ttl time.Duration) error {
-	return c.store.SetCyberSessionBlocked(ctx, scopeKey, keys, ttl)
+func (c coverBlockCache) SetCyberSessionBlocked(ctx context.Context, block service.CyberSessionBlock, ttl time.Duration) error {
+	return c.store.SetCyberSessionBlocked(ctx, block, ttl)
 }
 
-func (c coverBlockCache) IsCyberSessionScopeActive(ctx context.Context, scopeKey string) (bool, error) {
-	active, err := c.store.IsCyberSessionScopeActive(ctx, scopeKey)
-	if active {
+func (c coverBlockCache) CyberSessionTranscriptLengths(ctx context.Context, apiKeyID int64, scopeKey string) ([]int, error) {
+	lengths, err := c.store.CyberSessionTranscriptLengths(ctx, apiKeyID, scopeKey)
+	if len(lengths) > 0 {
 		c.hits.Add(1)
 	}
-	return active, err
+	return lengths, err
 }
 
 func (c coverBlockCache) FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error) {
