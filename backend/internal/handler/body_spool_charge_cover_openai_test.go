@@ -19,7 +19,6 @@ type coverCombo struct {
 	route, account string
 	proto, model   string // body protocol and model
 	pattern, path  string // gin route pattern and request path
-	passthrough    bool   // no converter: also runs at 16 MiB (S)
 	local          bool   // answered without an upstream call
 	setup          func(t *testing.T) (http.Handler, *config.Config, *coverUpstream)
 }
@@ -67,7 +66,6 @@ func coverOpenAICombos() []coverCombo {
 			out = append(out, coverCombo{
 				route: rt.route, account: acct.name, proto: rt.proto, model: "gpt-5.5",
 				pattern: rt.pattern, path: rt.pattern,
-				passthrough: rt.proto == "responses" && acct.mode == "force_responses",
 				setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
 					up := &coverUpstream{}
 					accounts := largeBodyTestAccounts(acct.kind)
