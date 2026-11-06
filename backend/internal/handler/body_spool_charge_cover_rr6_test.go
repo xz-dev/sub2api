@@ -34,22 +34,26 @@ func (e *coverGuardEngine) Evaluate(ctx context.Context, req securityaudit.Reque
 	return e.evaluator.Evaluate(ctx, cfg, snapshot)
 }
 
-func rr6GuardCombos() []coverCombo {
+func rr6GuardCombos(sessionBlock bool) []coverCombo {
+	account := "guard-apikey-force_responses"
+	if sessionBlock {
+		account = coverSessionBlockPrefix + account
+	}
 	var out []coverCombo
 	for _, rt := range []struct{ route, proto, pattern string }{
 		{"v1/responses", "responses", "/v1/responses"},
 		{"v1/responses/compact", "responses", "/v1/responses/compact"},
 	} {
 		out = append(out, coverCombo{
-			route: rt.route, account: "guard-apikey-force_responses", proto: rt.proto, model: "gpt-5.5",
-			pattern: rt.pattern, path: rt.pattern,
+			route: rt.route, account: account, proto: rt.proto, model: "gpt-5.5",
+			pattern: rt.pattern, path: rt.pattern, sessionBlock: sessionBlock,
 			setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
 				up := &coverUpstream{}
 				accounts := largeBodyTestAccounts("apikey")
 				for i := range accounts {
 					accounts[i].Extra["openai_responses_mode"] = "force_responses"
 				}
-				h := newLargeBodyTestHandlerWithAccounts(t, up, accounts)
+				h := newCoverHandler(t, up, accounts, sessionBlock)
 				sc := &blockWordScanner{}
 				h.securityAuditCoordinator = securityaudit.NewCoordinator(nil,
 					&coverGuardEngine{evaluator: securityaudit.NewGuardEvaluator(sc, nil, securityaudit.NewAtomicMetrics())})

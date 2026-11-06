@@ -54,7 +54,18 @@ func resolveOpenAIWSClientThreadID(c *gin.Context, body []byte) string {
 	if id := strings.TrimSpace(gjson.GetBytes(body, "client_metadata.thread_id").String()); id != "" {
 		return id
 	}
-	return codexTurnMetadataThreadID(gjson.GetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader).String())
+	return codexTurnMetadataThreadID(bodyCodexTurnMetadata(body))
+}
+
+// bodyCodexTurnMetadata is the body's client_metadata turn metadata, read
+// through a view of the body: an oversized value is neither copied nor
+// decoded ("" above contentSeedDecodeMaxBytes; rr9).
+func bodyCodexTurnMetadata(body []byte) string {
+	value := parseRawJSONView(body).Get("client_metadata." + openAIWSTurnMetadataHeader)
+	if len(value.Raw) > contentSeedDecodeMaxBytes {
+		return ""
+	}
+	return value.String()
 }
 
 // codexTurnMetadata 是 x-codex-turn-metadata JSON 里执行作用域用到的字段。
@@ -65,7 +76,9 @@ type codexTurnMetadata struct {
 
 func parseCodexTurnMetadata(raw string) (codexTurnMetadata, bool) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	// Turn metadata is a few hundred bytes; a larger value is not decoded
+	// (rr9: every decode on the verified-raw path is bounded in bytes).
+	if raw == "" || len(raw) > contentSeedDecodeMaxBytes {
 		return codexTurnMetadata{}, false
 	}
 	var metadata codexTurnMetadata
@@ -93,7 +106,7 @@ func openAIWSExecutionTurnMetadata(c *gin.Context, body []byte) codexTurnMetadat
 	if len(body) == 0 {
 		return codexTurnMetadata{}
 	}
-	metadata, _ := parseCodexTurnMetadata(gjson.GetBytes(body, "client_metadata."+openAIWSTurnMetadataHeader).String())
+	metadata, _ := parseCodexTurnMetadata(bodyCodexTurnMetadata(body))
 	return metadata
 }
 

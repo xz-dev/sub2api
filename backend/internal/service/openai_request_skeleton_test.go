@@ -106,3 +106,35 @@ func TestRewriteOpenAIRequestSkeletonChargesLargeSkeleton(t *testing.T) {
 		func(map[string]any) bool { return false }, func() error { t.Fatal("small skeleton charged"); return nil })
 	require.NoError(t, err)
 }
+
+// TestRewriteOpenAIRequestSkeletonChargesLargeString (rr9): a skeleton of
+// few values above openAIRequestSkeletonDecodeMaxBytes (one large escaped
+// instructions string) takes the conversion charge once, before its decode;
+// input items other than additional_tools do not count.
+func TestRewriteOpenAIRequestSkeletonChargesLargeString(t *testing.T) {
+	instr := strings.Repeat(`line \"quoted\" caf\u00e9 text\n`, 4<<10)
+	body := `{"model":"m","instructions":"` + instr + `","input":[{"role":"user","content":"a"}]}`
+	require.Greater(t, len(body), openAIRequestSkeletonDecodeMaxBytes)
+	require.False(t, rawJSONValuesAbove(body, contentSeedDecodeMaxValues))
+	charged := 0
+	out, changed, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(m map[string]any) bool { m["x"] = 1; return true },
+		func() error { charged++; return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, changed)
+	require.Equal(t, 1, charged)
+	require.Contains(t, string(out), `"x":1`)
+
+	called := false
+	_, _, ok, err = rewriteOpenAIRequestSkeleton([]byte(body), func(map[string]any) bool { called = true; return false },
+		func() error { return ErrRequestConversionRefused })
+	require.ErrorIs(t, err, ErrRequestConversionRefused)
+	require.True(t, ok)
+	require.False(t, called)
+
+	large := `{"model":"m","input":[{"role":"user","content":"` + instr + `"}]}`
+	_, _, ok, err = rewriteOpenAIRequestSkeleton([]byte(large), func(map[string]any) bool { return false },
+		func() error { t.Fatal("input items charged"); return nil })
+	require.NoError(t, err)
+	require.True(t, ok)
+}

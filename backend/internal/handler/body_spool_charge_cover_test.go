@@ -247,6 +247,12 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 				shapes = append(shapes, shape{name: cl.name, body: cl.body, only16: true})
 			}
 		}
+		if cb.sessionBlock { // rr9: only the probe with the session block on
+			shapes = shapes[:0]
+		}
+		if cb.proto == "responses" { // rr9 reviewer probe
+			shapes = append(shapes, shape{name: coverProbeEscapedUser, body: func(n int) []byte { return coverEscapedUserStringBody(cb.model, n) }})
+		}
 		// 16 MiB is S; a converted or fully decoded request is charged
 		// k_conv, which the 8 GiB fake cgroup leaves room for, so every
 		// route runs at every size.
@@ -276,7 +282,11 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 						coverPrimes[sh.prime](t, *srv, cb.path, sh.body(64<<10), sh.header)
 					}
 					body := sh.body(size)
+					hits := srv.up.blockScopeHits.Load()
 					r := runCoverCaseBody(t, *srv, cb.path, body, sh.codex, sh.header, sh.chunked)
+					if cb.sessionBlock {
+						assert.Greater(t, srv.up.blockScopeHits.Load(), hits, "the session-block transcript lookup did not run")
+					}
 					t.Logf("COVER %s status %d calls %d bytes %d peak_heap %d peak_charge %d excess %d samples %d",
 						name, r.status, r.calls, r.bytes, r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
 					if r.reply != "" {

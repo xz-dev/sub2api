@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 )
 
 // Marker contract.
@@ -64,6 +65,13 @@ func (n Nonce) Hex() string { return hex.EncodeToString(n[:]) }
 
 // tag is "lrc<hex>:"; it is preceded by \u0000 (escaped) or NUL (raw).
 func (n Nonce) tag() []byte { return []byte(markerPrefix + n.Hex() + ":") }
+
+// MayHoldMarker reports whether the JSON text holds what may be a marker of
+// any spool (its escaped start, \u0000lrc). It needs no spool, so it gives
+// the same answer on a skeleton and on a body that was never spooled.
+func MayHoldMarker(jsonText string) bool {
+	return strings.Contains(jsonText, markerEsc+markerPrefix)
+}
 
 // appendMarker appends the escaped marker for blob idx.
 func (n Nonce) appendMarker(dst []byte, idx int) []byte {

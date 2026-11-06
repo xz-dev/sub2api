@@ -20,6 +20,7 @@ type coverCombo struct {
 	proto, model   string // body protocol and model
 	pattern, path  string // gin route pattern and request path
 	local          bool   // answered without an upstream call
+	sessionBlock   bool   // cyber session block on; runs only the rr9 probe
 	setup          func(t *testing.T) (http.Handler, *config.Config, *coverUpstream)
 }
 
@@ -50,11 +51,13 @@ var coverOpenAIAccounts = []struct{ name, kind, mode string }{
 	{"apikey-passthrough", "apikey_passthrough", ""},
 }
 
+type coverOpenAIRoute struct {
+	route, proto, pattern string
+	serve                 func(h *OpenAIGatewayHandler) gin.HandlerFunc
+}
+
 func coverOpenAICombos() []coverCombo {
-	routes := []struct {
-		route, proto, pattern string
-		serve                 func(h *OpenAIGatewayHandler) gin.HandlerFunc
-	}{
+	routes := []coverOpenAIRoute{
 		{"v1/responses", "responses", "/v1/responses", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.Responses }},
 		{"responses", "responses", "/responses", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.Responses }},
 		{"codex/responses", "responses", "/backend-api/codex/responses", func(h *OpenAIGatewayHandler) gin.HandlerFunc { return h.Responses }},
@@ -67,27 +70,21 @@ func coverOpenAICombos() []coverCombo {
 	var out []coverCombo
 	for _, rt := range routes {
 		for _, acct := range coverOpenAIAccounts {
-			out = append(out, coverCombo{
-				route: rt.route, account: acct.name, proto: rt.proto, model: "gpt-5.5",
-				pattern: rt.pattern, path: rt.pattern,
-				setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
-					up := &coverUpstream{}
-					accounts := largeBodyTestAccounts(acct.kind)
-					for i := range accounts {
-						if acct.mode != "" {
-							accounts[i].Extra["openai_responses_mode"] = acct.mode
-						}
-					}
-					h := newLargeBodyTestHandlerWithAccounts(t, up, accounts)
-					enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
-					r := gin.New()
-					r.POST(rt.pattern, coverAuth(service.PlatformOpenAI), BodySpoolIngest(h.cfg), rt.serve(h))
-					return r, h.cfg, up
-				},
-			})
+			out = append(out, coverOpenAICombo(rt, acct.name, acct.kind, acct.mode, false))
 		}
 	}
-	out = append(out, rr6GuardCombos()...)
+	out = append(out, rr6GuardCombos(false)...)
+	// rr9: the Responses routes again with the cyber session block on;
+	// these run only the escaped first-user probe.
+	for _, rt := range routes {
+		if rt.proto != "responses" {
+			continue
+		}
+		for _, acct := range coverOpenAIAccounts {
+			out = append(out, coverOpenAICombo(rt, coverSessionBlockPrefix+acct.name, acct.kind, acct.mode, true))
+		}
+	}
+	out = append(out, rr6GuardCombos(true)...)
 	// rr6: failover from a passthrough account (502) to a plain API-key
 	// force_responses account.
 	out = append(out, coverCombo{
@@ -121,4 +118,27 @@ func coverOpenAICombos() []coverCombo {
 		},
 	})
 	return out
+}
+
+// coverOpenAICombo is route rt on an account of kind and Responses mode;
+// sessionBlock turns the cyber session block on (coverSessionBlockDeps).
+func coverOpenAICombo(rt coverOpenAIRoute, name, kind, mode string, sessionBlock bool) coverCombo {
+	return coverCombo{
+		route: rt.route, account: name, proto: rt.proto, model: "gpt-5.5",
+		pattern: rt.pattern, path: rt.pattern, sessionBlock: sessionBlock,
+		setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
+			up := &coverUpstream{}
+			accounts := largeBodyTestAccounts(kind)
+			for i := range accounts {
+				if mode != "" {
+					accounts[i].Extra["openai_responses_mode"] = mode
+				}
+			}
+			h := newCoverHandler(t, up, accounts, sessionBlock)
+			enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
+			r := gin.New()
+			r.POST(rt.pattern, coverAuth(service.PlatformOpenAI), BodySpoolIngest(h.cfg), rt.serve(h))
+			return r, h.cfg, up
+		},
+	}
 }
