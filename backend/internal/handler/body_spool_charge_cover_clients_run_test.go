@@ -64,8 +64,9 @@ func TestClientShapesStayOnListWithIdentifierCap(t *testing.T) {
 // TestBodySpoolClientShapesRawPath (rr6 follow-up item 6): each client
 // shape at 16 MiB on /v1/responses, API-key force_responses account. A
 // shape on the verified-raw list must get 200 at the k_skel charge with
-// the live heap within it; the upstream must receive the body unchanged.
-// Logs k (live-heap peak / body) for every shape, also those off the list.
+// its total allocation within it; the upstream must receive the body
+// unchanged. Logs k (total allocation / body) for every shape, also those
+// off the list.
 // Slow: SUB2API_CHARGE_COVER=1; SUB2API_CHARGE_COVER_ONLY filters by name.
 func TestBodySpoolClientShapesRawPath(t *testing.T) {
 	if os.Getenv("SUB2API_CHARGE_COVER") == "" {
