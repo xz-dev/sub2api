@@ -83,8 +83,10 @@ func TestVerifiedRawReasonNamesOnly(t *testing.T) {
 	long := strings.Repeat("x", 1<<20)
 	cases := []struct{ body, want string }{
 		{`{"prompt":"secret-value"}`, "root member prompt"},
-		{`{"` + long + `":1}`, "root member " + strings.Repeat("x", 64) + "..."},
-		{`{"we ird\"":1}`, "root member _"},
+		{`{"` + long + `":1}`, "root member name longer than 256 bytes"},
+		{`{"` + strings.Repeat("x", 200) + `":1}`, "root member " + strings.Repeat("x", 64) + "..."},
+		{`{"we ird\"":1}`, "root member name with an escape"},
+		{`{"we ird":1}`, "root member we_ird"},
 		{`{"input":[{"type":"image_generation_call","result":"secret"}]}`, "root member input: item type image_generation_call"},
 		{`{"input":[{"type":{"secret":"v"}}]}`, "root member input: item type not a plain string"},
 		{`{"input":[{"type":"a b<c>"}]}`, "root member input: item type a_b_c_"},
