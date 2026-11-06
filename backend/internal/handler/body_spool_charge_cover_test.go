@@ -222,8 +222,15 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 		// No Content-Length (exit gate 7.5 finding 2): charged as the bytes
 		// arrive instead of up front.
 		shapes = append(shapes, shape{name: "tiny_chunked", chunked: true, body: func(n int) []byte { return coverBody(p, coverBases[0], n, cb.model, "", "") }})
-		for _, m := range coverMods {
+		mods := coverMods
+		if os.Getenv("SUB2API_CHARGE_COVER_GEN") != "" { // the schema-driven shapes (rr6)
+			mods = append(append([]coverMod{}, coverMods...), coverGenMods()...)
+		}
+		for _, m := range mods {
 			if m.proto != cb.proto {
+				continue
+			}
+			if strings.HasPrefix(m.name, "gen_") && !coverGenCombo(cb) {
 				continue
 			}
 			model := cb.model

@@ -153,12 +153,14 @@ func coverBody(p coverProto, s coverBase, size int, model, root, item string) []
 // sent with the request (and with the priming request). prime names the
 // per-session state set up first with a small request of the same shape
 // and session (see coverPrimes).
-var coverMods = []struct {
+type coverMod struct {
 	proto, name, root, item, model string
 	codex                          bool
 	header                         map[string]string
 	prime                          string
-}{
+}
+
+var coverMods = []coverMod{
 	{proto: "responses", name: "compaction_trigger", item: `{"type":"compaction_trigger"}`},
 	{proto: "responses", name: "dupkey", root: `"store":false,`},
 	{proto: "responses", name: "parallel_tool_calls", root: `"parallel_tool_calls":true,`},
