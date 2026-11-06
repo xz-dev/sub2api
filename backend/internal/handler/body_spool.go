@@ -307,6 +307,14 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	// any decode. Every other route is charged k_conv from the first byte
 	// (limit L_conv).
 	responsesFallback := !covered && isBodySpoolResponsesFallbackRequest(c)
+	switch {
+	case covered:
+		c.Set(service.LargeRequestRouteClassKey, "responses")
+	case responsesFallback && strings.HasSuffix(strings.TrimRight(c.Request.URL.Path, "/"), "/compact"):
+		c.Set(service.LargeRequestRouteClassKey, "responses_compact")
+	case responsesFallback:
+		c.Set(service.LargeRequestRouteClassKey, "responses_encoded")
+	}
 	limit, k := fallbackLimit(rt.cfg, st.charge.Limit()), rt.cfg.KPath
 	switch {
 	case covered:
@@ -411,7 +419,7 @@ func chargeUnlessVerifiedRawShape(c *gin.Context, body []byte) bool {
 		return true
 	}
 	c.Set(bodySpoolRawReasonKey, reason)
-	if err := service.ChargeRequestConversion(c); err != nil {
+	if err := service.ChargeRequestOffList(c, "request", reason); err != nil {
 		c.Abort()
 		return false
 	}
