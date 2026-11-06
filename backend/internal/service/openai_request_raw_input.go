@@ -67,11 +67,12 @@ func rebuildOpenAIRawInput(body []byte, input gjson.Result, fn func(item gjson.R
 // The standard decoder keeps the last duplicate key; GJSON selects the first.
 // hasDuplicateJSONObjectKeysIn is hasDuplicateJSONObjectKeys with the keys
 // kept in *scratch, reused across calls: no map for an object of up to 32
-// keys (review rr3: a map per item of a body of many small items).
+// keys (review rr3: a map per item of a body of many small items). Values
+// are never unescaped (forEachRawJSONMember; rr9).
 func hasDuplicateJSONObjectKeysIn(object gjson.Result, scratch *[]string) bool {
 	keys := (*scratch)[:0]
 	duplicate, large := false, false
-	object.ForEach(func(key, _ gjson.Result) bool {
+	forEachRawJSONMember(object, func(key, _ gjson.Result) bool {
 		if len(keys) == 32 {
 			large = true
 			return false
@@ -95,7 +96,7 @@ func hasDuplicateJSONObjectKeysIn(object gjson.Result, scratch *[]string) bool {
 func hasDuplicateJSONObjectKeys(object gjson.Result) bool {
 	seen := make(map[string]struct{})
 	duplicate := false
-	object.ForEach(func(key, _ gjson.Result) bool {
+	forEachRawJSONMember(object, func(key, _ gjson.Result) bool {
 		if _, exists := seen[key.Str]; exists {
 			duplicate = true
 			return false

@@ -2475,7 +2475,8 @@ func openAIRequestBodyMayContainEmptyBase64InputImage(body []byte) bool {
 	if len(body) == 0 || !openAIRequestBodyMayContainInputImageToken(body) {
 		return false
 	}
-	input := gjson.GetBytes(body, "input")
+	// A view of the body, and a walk that never unescapes a value (rr9).
+	input := parseRawJSONView(body).Get("input")
 	if !input.Exists() {
 		return false
 	}
@@ -2496,7 +2497,7 @@ func openAIJSONValueMayContainEmptyBase64InputImage(value gjson.Result) bool {
 	}
 	if value.IsArray() {
 		found := false
-		value.ForEach(func(_, item gjson.Result) bool {
+		forEachRawJSONMember(value, func(_, item gjson.Result) bool {
 			if openAIJSONValueMayContainEmptyBase64InputImage(item) {
 				found = true
 				return false
@@ -2509,7 +2510,7 @@ func openAIJSONValueMayContainEmptyBase64InputImage(value gjson.Result) bool {
 		if strings.TrimSpace(value.Get("type").String()) == "input_image" && isEmptyBase64DataURI(value.Get("image_url").String()) {
 			return true
 		}
-		return openAIJSONValueMayContainEmptyBase64InputImage(value.Get("content"))
+		return openAIJSONValueMayContainEmptyBase64InputImage(firstRawJSONMember(value, "content"))
 	}
 	return false
 }

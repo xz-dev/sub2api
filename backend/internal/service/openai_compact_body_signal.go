@@ -132,17 +132,18 @@ func normalizeCompactionTriggerInputOrderDecoded(body []byte) ([]byte, bool, err
 // mayHaveCompactionTrigger reports whether any top-level "input" member
 // of the valid body is an array with an object that has any "type" member
 // equal to "compaction_trigger". When it is false, the decoded input (the
-// last "input", each item's last "type") has no trigger either.
+// last "input", each item's last "type") has no trigger either. The walk
+// never unescapes a value (forEachRawJSONMember; rr9).
 func mayHaveCompactionTrigger(body []byte) bool {
 	found := false
-	parseRawJSONView(body).ForEach(func(key, input gjson.Result) bool {
+	forEachRawJSONMember(parseRawJSONView(body), func(key, input gjson.Result) bool {
 		if key.Str != "input" || !input.IsArray() {
 			return true
 		}
-		input.ForEach(func(_, item gjson.Result) bool {
+		forEachRawJSONMember(input, func(_, item gjson.Result) bool {
 			if item.IsObject() {
-				item.ForEach(func(name, value gjson.Result) bool {
-					found = name.Str == "type" && value.Type == gjson.String && value.Str == "compaction_trigger"
+				forEachRawJSONMember(item, func(name, value gjson.Result) bool {
+					found = name.Str == "type" && value.Type == gjson.String && rawJSONStringIs(value.Raw, "compaction_trigger")
 					return !found
 				})
 			}
