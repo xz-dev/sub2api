@@ -41,7 +41,7 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool) (ou
 		skeleton = append(skeleton, '[')
 		first := true
 		input.ForEach(func(_, item gjson.Result) bool {
-			if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+			if strings.TrimSpace(lastRawObjectMember(item, "type").String()) != "additional_tools" {
 				return true
 			}
 			if !first {

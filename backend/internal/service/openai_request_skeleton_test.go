@@ -50,3 +50,33 @@ func TestRewriteOpenAIRequestSkeleton(t *testing.T) {
 	require.Contains(t, string(out), `"input":"text"`)
 	require.NotContains(t, string(out), "minProperties")
 }
+
+// TestRewriteOpenAIRequestSkeletonDuplicateItemType (review rr5 blocker b):
+// an input item's type is its LAST type member, as the decoder reads it. An
+// additional_tools item written "type":"message","type":"additional_tools"
+// is seen (so the Codex image bridge does not add a second
+// image_generation tool); one written the other way round is not.
+func TestRewriteOpenAIRequestSkeletonDuplicateItemType(t *testing.T) {
+	for _, tc := range []struct {
+		item string
+		seen bool
+	}{
+		{`{"type":"message","type":"additional_tools","tools":[{"type":"image_generation"}]}`, true},
+		{`{"type":"additional_tools","type":"message","tools":[{"type":"image_generation"}]}`, false},
+		{`{"typ\u0065":"message","type":"additional_tools","tools":[{"type":"image_generation"}]}`, true},
+	} {
+		body := `{"model":"m","input":[{"role":"user","content":"a"},` + tc.item + `]}`
+		var seen bool
+		_, _, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(m map[string]any) bool {
+			seen = hasOpenAIImageGenerationTool(m)
+			return false
+		})
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, tc.seen, seen, tc.item)
+
+		var full map[string]any
+		require.NoError(t, decodeOpenAIJSONUseNumber([]byte(body), &full))
+		require.Equal(t, hasOpenAIImageGenerationTool(full), seen, "same as the decoded body: %s", tc.item)
+	}
+}
