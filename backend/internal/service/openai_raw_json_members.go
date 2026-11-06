@@ -63,7 +63,14 @@ func forEachRawJSONMember(t gjson.Result, iterator func(key, value gjson.Result)
 			i = end
 			key.Raw = json[s:end]
 			if esc {
-				key.Str = gjson.Parse(key.Raw).Str // a name: small on every on-list body
+				// One copy of the name per pass. On an on-list body the
+				// objects the verified-raw list walks have no escaped
+				// name and none over rawNameMaxBytes (request_raw_list.go);
+				// names inside values it does not walk (metadata keys up to
+				// rawIdentMaxBytes, tool parameters, schemas) can be escaped
+				// and long, and are in the charge-cover generator
+				// (adv_rv_*key*, adv_rv1_key_*).
+				key.Str = gjson.Parse(key.Raw).Str
 			} else {
 				key.Str = key.Raw[1 : len(key.Raw)-1]
 			}

@@ -53,16 +53,16 @@ var rawRootMembers = map[string]func(string) string{
 	"background":             rawBool,
 	"parallel_tool_calls":    rawBool, // raw rewrite (normalizeOpenAIParallelToolCallsWithoutTools)
 	"tools":                  rawTools,
-	"tool_choice":            rawAny,
+	"tool_choice":            rawAnyNames,
 	"reasoning":              rawReasoning,
 	"include":                rawArray,
-	"text":                   rawObject, // json_schema: skeleton rewrite, no input decode (gen_root_text_json_schema)
+	"text":                   rawObjectNames, // json_schema: skeleton rewrite, no input decode (gen_root_text_json_schema)
 	"metadata":               rawMetadata,
-	"stream_options":         rawObject,
-	"client_metadata":        rawObject,
+	"stream_options":         rawObjectNames,
+	"client_metadata":        rawObjectNames,
 	"prompt_cache_key":       rawIdentString,
-	"prompt_cache_retention": rawAny,      // deleted for non-Codex clients by one sjson patch
-	"prompt_cache_options":   rawAny,      // same
+	"prompt_cache_retention": rawAnyNames, // deleted for non-Codex clients by one sjson patch
+	"prompt_cache_options":   rawAnyNames, // same
 	"safety_identifier":      rawIdentAny, // same
 	"previous_response_id":   rawIdentString,
 	"service_tier":           rawIdentAny,
@@ -158,8 +158,11 @@ var rawDecisiveHeaders = map[string]func(string) bool{
 // (the ingest's skeleton or the decoded fallback body) and its headers are
 // on the verified-raw list; reason names the first part that is not. It
 // walks the raw JSON once and allocates nothing in proportion to the body
-// (no value is unescaped; a member name or a type with an escape is not on
-// the list).
+// (no value is unescaped; a type with an escape is not on the list, nor is
+// a member name with an escape or longer than rawNameMaxBytes in any
+// object the list walks: the root, items, content parts, tools, reasoning,
+// conversation, and the root members checked by rawObjectNames and
+// rawAnyNames).
 func VerifiedRawResponsesRequest(body []byte, header http.Header) (ok bool, reason string) {
 	for name, verified := range rawDecisiveHeaders {
 		if v := header.Get(name); v != "" && !verified(v) {
@@ -178,6 +181,8 @@ func VerifiedRawResponsesRequest(body []byte, header http.Header) (ok bool, reas
 	forEachRawMember(raw, func(key, value string) bool {
 		check, listed := rawRootMembers[key]
 		switch {
+		case rawNameReason(key) != "":
+			reason = "root " + rawNameReason(key)
 		case !listed:
 			reason = "root member " + rawReasonName(key)
 		case n == len(seen):
@@ -254,16 +259,60 @@ func rawSkipSpace(raw string, i int) int {
 	return i
 }
 
+// rawNameMaxBytes: the longest member name the list accepts in an object it
+// walks (review rr10). The body path matches member names against fixed
+// names (gjson paths, sjson edits, the tool-schema sanitizer); a long or
+// escaped name made several of those sites copy or unescape it
+// (adv_rv1_key_tool_big k 19.7, adv_rv_key_tool_choice k 11.2,
+// adv_rv_key_client_metadata k 9.2). Real pi and SDK names are short and
+// plain (TestBodySpoolClientShapesRawPath).
+const rawNameMaxBytes = 256
+
+// Member-name sentinels from forEachRawMember: neither can be a raw name,
+// whose backslashes always start an escape.
+const (
+	rawNameEscaped = `\`
+	rawNameLong    = `\L`
+)
+
+// rawNameReason: "" when the member name k from forEachRawMember is plain
+// and within rawNameMaxBytes; else why the object is not on the list.
+func rawNameReason(k string) string {
+	switch k {
+	case rawNameEscaped:
+		return "member name with an escape"
+	case rawNameLong:
+		return "member name longer than 256 bytes"
+	}
+	return ""
+}
+
+// rawNamesReason: rawNameReason of the first bad member name of the raw
+// JSON object obj ("" for any other value).
+func rawNamesReason(obj string) (reason string) {
+	if rawFirst(obj) != '{' {
+		return ""
+	}
+	forEachRawMember(obj, func(k, _ string) bool {
+		reason = rawNameReason(k)
+		return reason == ""
+	})
+	return reason
+}
+
 // forEachRawMember calls fn with each member of the raw JSON object obj:
-// the name without quotes ("\\" when it has an escape, never on a list) and
-// the raw value. It stops when fn returns false.
+// the name without quotes (rawNameEscaped when it has an escape,
+// rawNameLong when it is longer than rawNameMaxBytes; neither is on a
+// list) and the raw value. It stops when fn returns false.
 func forEachRawMember(obj string, fn func(key, value string) bool) {
 	i := rawSkipSpace(obj, 1)
 	for i < len(obj) && obj[i] == '"' {
 		end := rawValueEnd(obj, i)
 		key := obj[i+1 : end-1]
 		if strings.IndexByte(key, '\\') >= 0 {
-			key = `\`
+			key = rawNameEscaped
+		} else if len(key) > rawNameMaxBytes {
+			key = rawNameLong
 		}
 		i = rawSkipSpace(obj, end)
 		i = rawSkipSpace(obj, i+1) // ':'
@@ -315,6 +364,19 @@ func rawStr(v string) (string, bool) {
 
 func rawAny(string) string { return "" }
 
+// rawAnyNames: any value; an object's member names plain and within
+// rawNameMaxBytes (gjson and sjson sites match them by name).
+func rawAnyNames(v string) string { return rawNamesReason(v) }
+
+// rawObjectNames: an object (or null) whose member names are plain and
+// within rawNameMaxBytes.
+func rawObjectNames(v string) string {
+	if r := rawObject(v); r != "" {
+		return r
+	}
+	return rawNamesReason(v)
+}
+
 // rawIdentMaxBytes: the cap on an identifier member's raw bytes (a
 // string's bytes between the quotes, as sent; any other value's whole raw
 // text).
@@ -351,7 +413,9 @@ func rawConversation(v string) (reason string) {
 		return rawIdent(v)
 	}
 	forEachRawMember(v, func(k, m string) bool {
-		if r := rawIdent(m); r != "" {
+		if r := rawNameReason(k); r != "" {
+			reason = r
+		} else if r := rawIdent(m); r != "" {
 			reason = rawReasonName(k) + " " + r
 		}
 		return reason == ""
@@ -366,7 +430,9 @@ func rawReasoning(v string) (reason string) {
 		return r
 	}
 	forEachRawMember(v, func(k, m string) bool {
-		if k == "effort" || k == "summary" {
+		if r := rawNameReason(k); r != "" {
+			reason = r
+		} else if k == "effort" || k == "summary" {
 			if r := rawIdent(m); r != "" {
 				reason = k + " " + r
 			}
@@ -468,7 +534,8 @@ func rawItem(item string) string {
 	}
 	var typ string
 	var namespace string
-	hasType, hasRole, hasNamespace, nameEscaped := false, false, false, false
+	hasType, hasRole, hasNamespace := false, false, false
+	nameReason := ""
 	longIdent := ""
 	// Member names, for duplicates: an item with a duplicate name is
 	// decoded alone by the store=false replay and the input-ID sanitizer.
@@ -491,8 +558,9 @@ func rawItem(item string) string {
 			hasRole = true
 		case "namespace":
 			namespace, hasNamespace = v, true
-		case `\`:
-			nameEscaped = true
+		}
+		if nameReason == "" {
+			nameReason = rawNameReason(k)
 		}
 		if longIdent == "" && rawItemIdentMembers[k] && rawIdent(v) != "" {
 			longIdent = k
@@ -500,8 +568,8 @@ func rawItem(item string) string {
 		return true
 	})
 	switch {
-	case nameEscaped:
-		return "item member name with an escape"
+	case nameReason != "":
+		return "item " + nameReason
 	case longIdent != "":
 		return "item " + longIdent + " longer than 4096 bytes"
 	case n > len(seen):
@@ -593,6 +661,9 @@ func rawContentPart(part string) string {
 	if rawFirst(part) != '{' {
 		return "content part is not an object"
 	}
+	if r := rawNamesReason(part); r != "" {
+		return "content part " + r
+	}
 	typ, ok := rawStr(rawMember(part, "type"))
 	if !ok {
 		return "content part type not a plain string"
@@ -623,11 +694,14 @@ func rawTools(v string) (reason string) {
 		return "not an array"
 	}
 	forEachRawElement(v, func(tool string) bool {
-		typ, ok := "", false
+		typ, ok, names := "", false, ""
 		if rawFirst(tool) == '{' {
 			typ, ok = rawStr(rawMember(tool, "type"))
+			names = rawNamesReason(tool)
 		}
 		switch {
+		case names != "":
+			reason = "tool " + names
 		case !ok:
 			reason = "tool type not a plain string"
 		case !rawToolTypes[typ]:

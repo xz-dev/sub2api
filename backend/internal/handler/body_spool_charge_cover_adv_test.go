@@ -145,6 +145,7 @@ func coverAdvShapes() []coverAdvShape {
 		}
 	}
 	out = append(out, coverAdvLeafShapes()...)
+	out = append(out, coverAdvRVShapes()...) // rr10 review additions
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
 }
