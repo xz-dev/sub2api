@@ -128,6 +128,7 @@ func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
 			return nil, fmt.Errorf("parse responses input for additional tools: %w", err)
 		}
 	}
+	searchOutput := false
 	for _, raw := range items {
 		raw = bytesTrimSpace(raw)
 		if len(raw) == 0 || raw[0] != '{' {
@@ -138,6 +139,9 @@ func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
 		}
 		if err := json.Unmarshal(raw, &discriminator); err != nil {
 			return nil, fmt.Errorf("parse responses additional tools item: %w", err)
+		}
+		if strings.TrimSpace(discriminator.Type) == "tool_search_output" {
+			searchOutput = true
 		}
 		if discriminator.Type != "additional_tools" {
 			continue
@@ -154,6 +158,14 @@ func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
 	// A completed client tool search can introduce tools for the remainder of
 	// the turn. Promote them before lowering to ChatCompletions, using the same
 	// dedupe, conflict, namespace, and custom-tool rules as the native adapter.
+	// Only a tool_search declaration with a tool_search_output item can
+	// promote anything (promotedResponsesToolSearchDiscoveries); without both,
+	// the tools and the input are not encoded and decoded again (rr10: that
+	// round trip cost about 30 x a tools array of '<', which json.Marshal
+	// writes as 6 bytes each).
+	if !searchOutput || !responsesToolsDeclareToolSearch(tools) {
+		return tools, nil
+	}
 	toolsRaw, err := json.Marshal(tools)
 	if err != nil {
 		return nil, fmt.Errorf("encode responses tools for discovery promotion: %w", err)
@@ -181,6 +193,17 @@ func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
 		tools = append(tools, discovered...)
 	}
 	return tools, nil
+}
+
+// responsesToolsDeclareToolSearch is hasResponsesToolSearchDeclaration on
+// the typed tools.
+func responsesToolsDeclareToolSearch(tools []ResponsesTool) bool {
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Type) == "tool_search" {
+			return true
+		}
+	}
+	return false
 }
 
 // CustomToolNames 收集 Responses 请求中 custom/freeform 工具的名字。chat 桥回程时

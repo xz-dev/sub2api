@@ -91,7 +91,12 @@ func IsExplicitImageGenerationIntent(endpoint string, requestedModel string, bod
 	}
 	var modelSeen, toolsSeen, toolChoiceSeen bool
 	imageIntent := false
-	parseRawJSONView(body).ForEach(func(key, value gjson.Result) bool {
+	// Raw members (rr10): Result.ForEach unescaped every root string, input
+	// and instructions included; only model and tool_choice are read.
+	forEachRawJSONMember(parseRawJSONView(body), func(key, value gjson.Result) bool {
+		if value.Type == gjson.String && (key.Str == "model" || key.Str == "tool_choice") {
+			value.Str = rawJSONMemberString(value)
+		}
 		switch key.Str {
 		case "model":
 			if !modelSeen {
@@ -139,7 +144,12 @@ func isExplicitGrokImageGenerationIntent(endpoint string, requestedModel string,
 
 	var modelSeen, toolsSeen, toolChoiceSeen bool
 	imageIntent := false
-	parseRawJSONView(body).ForEach(func(key, value gjson.Result) bool {
+	// Raw members (rr10): Result.ForEach unescaped every root string, input
+	// and instructions included; only model and tool_choice are read.
+	forEachRawJSONMember(parseRawJSONView(body), func(key, value gjson.Result) bool {
+		if value.Type == gjson.String && (key.Str == "model" || key.Str == "tool_choice") {
+			value.Str = rawJSONMemberString(value)
+		}
 		switch key.Str {
 		case "model":
 			if !modelSeen {

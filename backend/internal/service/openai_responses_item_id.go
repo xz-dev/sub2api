@@ -63,7 +63,7 @@ func shouldStripOpenAIResponsesNonPairCallID(itemType string) bool {
 }
 
 func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
-	input := parseRawJSONView(body).Get("input")
+	input := firstRawJSONMember(parseRawJSONView(body), "input")
 	if !input.IsArray() {
 		return body, false, nil
 	}

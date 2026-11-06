@@ -41,21 +41,23 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 	if hasDuplicateJSONObjectKeysIn(root, &keys) {
 		return body, false, false, nil
 	}
-	input := root.Get("input")
+	// Raw members throughout (rr10): Result.ForEach and Get unescape every
+	// root string they pass (13 MB for 12.9 MB of escaped instructions).
+	input := firstRawJSONMember(root, "input")
 	keptItem := func(item gjson.Result) bool {
 		return strings.TrimSpace(lastRawObjectMember(item, "type").String()) == "additional_tools"
 	}
 	// An upper bound of the skeleton's size (one comma too many per
 	// container), without building it.
 	size := 2
-	root.ForEach(func(name, value gjson.Result) bool {
+	forEachRawJSONMember(root, func(name, value gjson.Result) bool {
 		size += len(name.Raw) + 2 // ':' and ','
 		if name.Str != "input" || !input.IsArray() {
 			size += len(value.Raw)
 			return true
 		}
 		size += 2
-		input.ForEach(func(_, item gjson.Result) bool {
+		forEachRawJSONMember(input, func(_, item gjson.Result) bool {
 			if keptItem(item) {
 				size += len(item.Raw) + 1
 			}
@@ -72,7 +74,7 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 	}
 	skeleton := make([]byte, 0, size)
 	skeleton = append(skeleton, '{')
-	root.ForEach(func(name, value gjson.Result) bool {
+	forEachRawJSONMember(root, func(name, value gjson.Result) bool {
 		if len(skeleton) > 1 {
 			skeleton = append(skeleton, ',')
 		}
@@ -84,7 +86,7 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 		}
 		skeleton = append(skeleton, '[')
 		first := true
-		input.ForEach(func(_, item gjson.Result) bool {
+		forEachRawJSONMember(input, func(_, item gjson.Result) bool {
 			if !keptItem(item) {
 				return true
 			}

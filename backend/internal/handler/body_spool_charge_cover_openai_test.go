@@ -20,7 +20,8 @@ type coverCombo struct {
 	proto, model   string // body protocol and model
 	pattern, path  string // gin route pattern and request path
 	local          bool   // answered without an upstream call
-	sessionBlock   bool   // cyber session block on; runs only the rr9 probe
+	sessionBlock   bool   // cyber session block on; runs only the rr9 probe and adv_*
+	advOnly        bool   // runs only the rr9 probe and the adv_* shapes (rr10)
 	setup          func(t *testing.T) (http.Handler, *config.Config, *coverUpstream)
 }
 
@@ -70,10 +71,31 @@ func coverOpenAICombos() []coverCombo {
 	var out []coverCombo
 	for _, rt := range routes {
 		for _, acct := range coverOpenAIAccounts {
-			out = append(out, coverOpenAICombo(rt, acct.name, acct.kind, acct.mode, false))
+			out = append(out, coverOpenAICombo(rt, acct.name, acct.kind, acct.mode, false, false))
 		}
 	}
 	out = append(out, rr6GuardCombos(false)...)
+	// rr10: the guard on every other Responses route × account, with the
+	// session block off and on; these run only the probe and adv_*.
+	for _, sb := range []bool{false, true} {
+		for _, rt := range routes {
+			if rt.proto != "responses" {
+				continue
+			}
+			for _, acct := range coverOpenAIAccounts {
+				if acct.name == "apikey-force_responses" && (rt.route == "v1/responses" || rt.route == "v1/responses/compact") {
+					continue // rr6GuardCombos
+				}
+				name := coverGuardPrefix + acct.name
+				if sb {
+					name = coverSessionBlockPrefix + name
+				}
+				cb := coverOpenAICombo(rt, name, acct.kind, acct.mode, sb, true)
+				cb.advOnly = true
+				out = append(out, cb)
+			}
+		}
+	}
 	// rr9: the Responses routes again with the cyber session block on;
 	// these run only the escaped first-user probe.
 	for _, rt := range routes {
@@ -81,7 +103,7 @@ func coverOpenAICombos() []coverCombo {
 			continue
 		}
 		for _, acct := range coverOpenAIAccounts {
-			out = append(out, coverOpenAICombo(rt, coverSessionBlockPrefix+acct.name, acct.kind, acct.mode, true))
+			out = append(out, coverOpenAICombo(rt, coverSessionBlockPrefix+acct.name, acct.kind, acct.mode, true, false))
 		}
 	}
 	out = append(out, rr6GuardCombos(true)...)
@@ -121,8 +143,9 @@ func coverOpenAICombos() []coverCombo {
 }
 
 // coverOpenAICombo is route rt on an account of kind and Responses mode;
-// sessionBlock turns the cyber session block on (coverSessionBlockDeps).
-func coverOpenAICombo(rt coverOpenAIRoute, name, kind, mode string, sessionBlock bool) coverCombo {
+// sessionBlock turns the cyber session block on (coverSessionBlockDeps),
+// guard the blocking prompt guard (coverGuardOn).
+func coverOpenAICombo(rt coverOpenAIRoute, name, kind, mode string, sessionBlock, guard bool) coverCombo {
 	return coverCombo{
 		route: rt.route, account: name, proto: rt.proto, model: "gpt-5.5",
 		pattern: rt.pattern, path: rt.pattern, sessionBlock: sessionBlock,
@@ -135,6 +158,9 @@ func coverOpenAICombo(rt coverOpenAIRoute, name, kind, mode string, sessionBlock
 				}
 			}
 			h := newCoverHandler(t, up, accounts, sessionBlock)
+			if guard {
+				coverGuardOn(h)
+			}
 			enableBodySpoolForTest(t, h.cfg, true, 8<<30, nil)
 			r := gin.New()
 			r.POST(rt.pattern, coverAuth(service.PlatformOpenAI), BodySpoolIngest(h.cfg), rt.serve(h))

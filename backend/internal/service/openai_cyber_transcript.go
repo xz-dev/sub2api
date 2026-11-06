@@ -3,7 +3,6 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -90,16 +89,24 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 	h := sha256.New()
 	_, _ = h.Write([]byte("cyber-transcript:v3|api_key="))
 	_, _ = h.Write([]byte(strconv.FormatInt(apiKeyID, 10)))
+	// Every canonical form, unescape and re-escape of request bytes below is
+	// paid from one budget (derivedKeyBudgetBytes, rr10); past it a value is
+	// hashed as sent. Members are read raw: nothing is unescaped outside it.
+	budget := newDerivedKeyBudget()
 	// Model and tool definitions are request configuration rather than history.
 	// Root instructions remain model-visible context and participate in identity.
 	for _, field := range []string{"instructions"} {
-		v := root.Get(field)
-		if !v.Exists() || (v.Type == gjson.String && strings.TrimSpace(v.String()) == "") {
+		v := firstRawJSONMember(root, field)
+		if !v.Exists() || (v.Type == gjson.String && rawJSONStringBlank(v.Raw)) {
 			continue
 		}
-		canonical := cyberTranscriptCanonical(v.Raw)
+		canonical := v.Raw
 		if v.Type == gjson.String {
-			canonical = v.String()
+			if s, ok := budget.stringValue(v); ok {
+				canonical = s
+			}
+		} else {
+			canonical = cyberTranscriptCanonical(budget, v.Raw)
 		}
 		_, _ = h.Write([]byte("|"))
 		_, _ = h.Write([]byte(field))
@@ -113,10 +120,11 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 		canonical := item.Raw
 		switch item.Type {
 		case gjson.String:
-			encoded, _ := json.Marshal(item.String())
-			canonical = string(encoded)
+			if encoded, ok := budget.marshalString(item); ok {
+				canonical = encoded
+			}
 		case gjson.JSON:
-			canonical = cyberTranscriptCanonical(item.Raw)
+			canonical = cyberTranscriptCanonical(budget, item.Raw)
 		}
 		if strings.TrimSpace(canonical) == "" {
 			return true
@@ -127,18 +135,18 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 		return visit(item, length, prefixKey)
 	}
 
-	if messages := root.Get("messages"); messages.Exists() {
+	if messages := firstRawJSONMember(root, "messages"); messages.Exists() {
 		if messages.IsArray() {
-			messages.ForEach(feed)
+			forEachRawJSONMember(messages, feed)
 		}
 		return
 	}
-	input := root.Get("input")
+	input := firstRawJSONMember(root, "input")
 	if input.IsArray() {
-		input.ForEach(feed)
+		forEachRawJSONMember(input, feed)
 		return
 	}
-	if input.Type == gjson.String && strings.TrimSpace(input.String()) != "" {
+	if input.Type == gjson.String && !rawJSONStringBlank(input.Raw) {
 		feed(gjson.Result{}, input)
 	}
 }
@@ -184,17 +192,18 @@ func cyberTranscriptBytesView(s string) []byte {
 }
 
 // cyberTranscriptCanonical is an item (or instructions) in the transcript
-// hash: canonical JSON when contentSeedDecodeBounded (at most
-// contentSeedDecodeMaxBytes bytes and contentSeedDecodeMaxValues values),
-// else the raw bytes. A decode costs about 150 bytes per value plus about
-// 2-6 x the string bytes, and runs on every request while the session
-// block is on (rr6 follow-up: one input item of many small parts; rr9: one
-// item of a single large escaped string; both on the verified-raw path).
-// Block keys are written and looked up with the same form; a large item
-// blocked before the upgrade is keyed again on its next block.
-func cyberTranscriptCanonical(raw string) string {
-	if !contentSeedDecodeBounded(raw) {
-		return raw
+// hash: canonical JSON when budget allows it (derivedKeyBudget.canonicalJSON:
+// at most contentSeedDecodeMaxBytes bytes and contentSeedDecodeMaxValues
+// values, and within what is left of the derivation's budget), else the
+// raw bytes. A decode costs about 150 bytes per value plus about 2-6 x the
+// string bytes, and runs on every request while the session block is on
+// (rr6 follow-up: one input item of many small parts; rr9: one item of a
+// single large escaped string; rr10: thousands of such items). Block keys
+// are written and looked up with the same form; a large item, or one past
+// the budget, blocked before the upgrade is keyed again on its next block.
+func cyberTranscriptCanonical(budget *derivedKeyBudget, raw string) string {
+	if canonical, ok := budget.canonicalJSON(raw); ok {
+		return canonical
 	}
-	return normalizeCompatSeedJSON(json.RawMessage(raw))
+	return raw
 }
