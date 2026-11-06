@@ -22,8 +22,8 @@ import (
 )
 
 // Charge-covers-allocation property (OpenSpec large-request-capacity task
-// 7.3a): while a request runs, its live heap growth stays within the bytes
-// it holds on the memory meter.
+// 7.3a): a request's total heap allocation (rr10) stays within the peak
+// bytes it holds on the memory meter.
 
 // requestChargedBytes is the test hook: the bytes cfg's request in flight
 // holds on its meter right now, that is the ingest's base charge, every
@@ -71,8 +71,9 @@ type chargeCoverReading struct {
 // is back to zero (a detached hold, the async audit, has finished), so
 // work the request left running is counted in its own case and not in
 // the next one.
-func measureChargeCover(charged func() int64, fn func()) chargeCoverReading {
-	waitChargeReleased(charged)
+func measureChargeCover(t testing.TB, charged func() int64, fn func()) chargeCoverReading {
+	t.Helper()
+	waitChargeReleased(t, charged)
 	runtime.GC()
 	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/gc/heap/allocs:bytes"}}
 	metrics.Read(s)
@@ -105,7 +106,7 @@ func measureChargeCover(charged func() int64, fn func()) chargeCoverReading {
 		}
 	}()
 	fn()
-	waitChargeReleased(charged)
+	waitChargeReleased(t, charged)
 	close(stop)
 	wg.Wait()
 	// One sample after the request: a request shorter than an interval
@@ -121,9 +122,16 @@ func measureChargeCover(charged func() int64, fn func()) chargeCoverReading {
 	return r
 }
 
-// waitChargeReleased waits (up to 5 s) until nothing is charged.
-func waitChargeReleased(charged func() int64) {
-	for deadline := time.Now().Add(5 * time.Second); charged() != 0 && time.Now().Before(deadline); {
+// waitChargeReleased waits (up to 5 s) until nothing is charged; a charge
+// still held after that fails the test (a leaked or stuck hold would
+// otherwise shift the next case's baseline).
+func waitChargeReleased(t testing.TB, charged func() int64) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); charged() != 0; {
+		if time.Now().After(deadline) {
+			t.Errorf("charge of %d B not released within 5 s", charged())
+			return
+		}
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -139,7 +147,7 @@ type coverResult struct {
 
 // coverHarnessCombo measures the harness itself: no ingest and a handler
 // that answers 200 without reading the body, so nothing is charged and the
-// heap growth is the recorder, the request, gin and the sampler. That is
+// total allocation is the recorder, the request, gin and the sampler. That is
 // what chargeCoverAllowance must cover.
 func coverHarnessCombo() coverCombo {
 	return coverCombo{route: "harness", account: "noop", proto: "harness", model: "gpt-5.5",
@@ -200,7 +208,7 @@ func runCoverCaseBody(t *testing.T, srv coverServer, path string, body []byte, c
 	rec := httptest.NewRecorder()
 	calls := srv.up.calls.Load()
 	srv.up.lastPath.Store("")
-	rd := measureChargeCover(charged, func() { srv.h.ServeHTTP(rec, req) })
+	rd := measureChargeCover(t, charged, func() { srv.h.ServeHTTP(rec, req) })
 	res := coverResult{chargeCoverReading: rd, status: rec.Code, calls: srv.up.calls.Load() - calls, bytes: len(body)}
 	if rec.Code != http.StatusOK {
 		last, _ := srv.up.lastPath.Load().(string)
@@ -211,9 +219,11 @@ func runCoverCaseBody(t *testing.T, srv coverServer, path string, body []byte, c
 
 // TestBodySpoolChargeCoversAllocation (task 7.3a): for every route that
 // takes a body, on every account kind, and every corpus shape at 2, 8 and
-// 16 MiB, the live heap growth of the request never exceeds the bytes it has charged by more than chargeCoverAllowance. A
-// 413 or 503 passes if nothing reached the upstream and the heap stayed
-// within the charge (no decode before the refusal). Any other status means
+// 16 MiB, the total heap allocation of the request (TotalAlloc, rr10)
+// never exceeds the bytes it has charged by more than
+// chargeCoverAllowance. A 413 or 503 passes if nothing reached the
+// upstream and the total allocation stayed within the charge (no decode
+// before the refusal). Any other status means
 // the case did not exercise its route and fails.
 //
 // Slow and not meaningful under -race: set SUB2API_CHARGE_COVER=1.
@@ -421,13 +431,10 @@ var coverPrimes = map[string]func(t *testing.T, srv coverServer, path string, bo
 	},
 }
 
-// chargeCoverAllowance is what the heap may exceed the charge by for
-// reasons outside the request under test. Measured: the harness combo
-// (recorder, request, gin, sampler; nothing charged) grows the heap by at
-// most 2,688 B. In two full runs the passing cases stayed within 144 B of
-// their charge, except web_search invalid 2 MiB once at +16,480 B (35.39
-// MiB on a 35.37 MiB charge; 27.9 MiB in the other run: the metric counts
-// garbage until the GC sweeps it, so peaks move with GC timing). 64 KiB is
-// 24 x the harness cost and 0.4 % of the smallest asserted charge (16 MiB:
-// k_skel 8 x 2 MiB).
+// chargeCoverAllowance is what a request's total heap allocation
+// (TotalAlloc) may exceed its peak charge by for reasons outside the
+// request under test. Measured (rr10): the harness combo (recorder,
+// request, gin, sampler; nothing charged) allocates at most 11,784 B in
+// total at 16 MiB. 64 KiB is 5.6 x the harness cost and 0.4 % of the
+// smallest asserted charge (16 MiB: k_skel 8 x 2 MiB).
 const chargeCoverAllowance = 64 << 10
