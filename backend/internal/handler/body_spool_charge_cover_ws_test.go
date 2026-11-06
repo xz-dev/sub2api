@@ -17,9 +17,9 @@ import (
 // runCoverWSReadCases adds the failed native WS ingress read (exit gate 7.5
 // finding 1) to the charge-covers-allocation property: a client message
 // twice the read limit, with the limit at 2, 8 and 16 MiB, is read up to the
-// limit and refused. While it is read, the live heap stays within its
-// charge; the refusal is the named request_too_large event with close 1000;
-// and the charge is returned. The 8 GiB fake cgroup puts L at 16 MiB, so
+// limit and refused. Its total allocation stays within its peak charge;
+// the refusal is the named request_too_large event with close 1000; and
+// the charge is returned. The 8 GiB fake cgroup puts L at 16 MiB, so
 // client_read_limit_bytes sets the smaller limits. It returns the number of
 // cases run.
 func runCoverWSReadCases(t *testing.T, only string) int {
@@ -45,7 +45,7 @@ func runCoverWSReadCases(t *testing.T, only string) int {
 			require.Eventually(t, func() bool { return charged() == 0 }, coverWSSettle, coverWSPoll)
 
 			var out wsReadOutcome
-			r := measureChargeCover(charged, func() { out = sendWSMessage(t, srv, msg) })
+			r := measureChargeCover(t, charged, func() { out = sendWSMessage(t, srv, msg) })
 			logCoverResult(t, name, coverResult{chargeCoverReading: r, status: int(out.closeCode), bytes: len(msg)})
 			assert.Equal(t, "request_too_large", gjson.Get(out.event, "error.code").String(), out.event)
 			assert.Equal(t, "sub2api", gjson.Get(out.event, "error.hop").String())
