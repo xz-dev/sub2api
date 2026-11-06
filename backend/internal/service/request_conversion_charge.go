@@ -37,15 +37,32 @@ func ChargeRequestConversion(c *gin.Context) error {
 	return charge()
 }
 
-// requestConversionCharger is ChargeRequestConversion for c, as a func for
+// RequestConversionCharger is ChargeRequestConversion for c, as a func for
 // helpers that have no *gin.Context.
-func requestConversionCharger(c *gin.Context) func() error {
+func RequestConversionCharger(c *gin.Context) func() error {
 	return func() error { return ChargeRequestConversion(c) }
 }
 
-// noConversionCharge charges nothing: the body has no request charge (a
+// NoConversionCharge charges nothing: the body has no request charge (a
 // WebSocket message).
-func noConversionCharge() error { return nil }
+func NoConversionCharge() error { return nil }
+
+// DecodeFullRequestBody is the one door for a full decode of a client
+// request body into Go values (encoding/json v1 semantics, numbers as
+// json.Number): such a decode costs about k_conv x the body, so it takes
+// charge, the k_conv top-up, before it allocates anything. A refused charge
+// returns its error (IsRequestConversionRefused: the 413/503 is written)
+// and leaves dst untouched. charge is RequestConversionCharger(c), a
+// charger a caller passed down, or NoConversionCharge for a body without a
+// request charge (a WebSocket message). Every full decode in service and
+// handler goes through here or takes ChargeRequestConversion first
+// (TestRequestConvertersChargeFirst; the charge-cover property test).
+func DecodeFullRequestBody(charge func() error, body []byte, dst any) error {
+	if err := charge(); err != nil {
+		return err
+	}
+	return decodeOpenAIJSONUseNumber(body, dst)
+}
 
 // IsRequestConversionRefused reports whether err is a written, final
 // converter refusal.

@@ -245,7 +245,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 					}
 					switch r.status {
 					case http.StatusOK:
-						if cb.proto != "harness" {
+						if cb.proto != "harness" && !cb.local {
 							assert.Positive(t, r.calls, "200 without an upstream call")
 						}
 					case http.StatusRequestEntityTooLarge, http.StatusServiceUnavailable:

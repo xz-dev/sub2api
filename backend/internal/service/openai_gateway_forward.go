@@ -66,7 +66,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if normalized {
 		body = normalizedBody
 	}
-	legacyIngressBody, legacyIngressChanged, legacyIngressErr := normalizeOpenAIResponsesLegacyIngress(body, requestConversionCharger(c))
+	legacyIngressBody, legacyIngressChanged, legacyIngressErr := normalizeOpenAIResponsesLegacyIngress(body, RequestConversionCharger(c))
 	if legacyIngressErr != nil {
 		return nil, legacyIngressErr
 	}
@@ -92,7 +92,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	responsesLite := account.IsOpenAI() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader))
 	if responsesLite {
-		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account)
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(body, account, RequestConversionCharger(c))
+		if IsRequestConversionRefused(liteErr) {
+			return nil, liteErr
+		}
 		if liteErr != nil {
 			param := "tools"
 			var validationErr *openAIResponsesLiteValidationError
@@ -116,6 +119,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	compactPath := isOpenAIResponsesCompactPath(c)
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
+		if IsRequestConversionRefused(err) {
+			return nil, err
+		}
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -307,11 +313,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		// A full decode costs about as much as a protocol conversion (the
 		// Codex OAuth transform, JSON-schema or image-tool rewrites, WS v2,
-		// retries): the converted request's charge first (review rr4).
-		if err := ChargeRequestConversion(c); err != nil {
-			return nil, err
-		}
-		decoded, decodeErr := requestView.DecodeFullBody()
+		// retries): DecodeFullBody takes the converted request's charge
+		// first (review rr4).
+		decoded, decodeErr := requestView.DecodeFullBody(RequestConversionCharger(c))
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -809,9 +813,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if stateStore := s.getOpenAIWSStateStore(); stateStore != nil && stateStore.HasAnySessionInvalidEncryptedContent() {
 		lineageSessionHash = s.GenerateSessionHash(c, body)
 		if invalidDigests := stateStore.GetSessionInvalidEncryptedContentDigests(lineageGroupID, lineageSessionHash); len(invalidDigests) > 0 {
-			strippedBody, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
-				body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0,
+			strippedBody, strippedCount, stripErr := s.stripSessionInvalidEncryptedContentLogged(
+				body, invalidDigests, "invalid_encrypted_lineage_strip", account.ID, 0, RequestConversionCharger(c),
 			)
+			if stripErr != nil {
+				return nil, stripErr
+			}
 			if strippedCount > 0 {
 				body = strippedBody
 				requestView = newOpenAIRequestView(body)

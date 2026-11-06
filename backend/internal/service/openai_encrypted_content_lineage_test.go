@@ -136,7 +136,7 @@ func TestStripOpenAIInvalidEncryptedContentRaw(t *testing.T) {
 		{"type":"input_text","text":"hello"}
 	],"stream":true}`)
 
-	stripped, count, err := stripOpenAIInvalidEncryptedContentRaw(payload, invalid)
+	stripped, count, err := stripOpenAIInvalidEncryptedContentRaw(payload, invalid, NoConversionCharge)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 	var decoded map[string]any
@@ -156,7 +156,7 @@ func TestStripOpenAIInvalidEncryptedContentRaw(t *testing.T) {
 	t.Run("miss_fast_path_returns_original", func(t *testing.T) {
 		t.Parallel()
 		cleanPayload := []byte(`{"input":[{"type":"reasoning","encrypted_content":"fresh-cipher"}]}`)
-		unchanged, count, err := stripOpenAIInvalidEncryptedContentRaw(cleanPayload, invalid)
+		unchanged, count, err := stripOpenAIInvalidEncryptedContentRaw(cleanPayload, invalid, NoConversionCharge)
 		require.NoError(t, err)
 		require.Zero(t, count)
 		require.Same(t, &cleanPayload[0], &unchanged[0], "未命中时应原样返回，不重编码")

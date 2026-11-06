@@ -489,13 +489,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	} else if changed {
 		body = cappedBody
 	}
-	if normalizedBody, changed := normalizeCodexAutomationBootstrap(body); changed {
+	// Both normalizers decode all of a body that has a codex_app or codex_tui
+	// item: they take the k_conv top-up first. A refusal is written and final.
+	chargeDecode := service.RequestConversionCharger(c)
+	if normalizedBody, changed, err := normalizeCodexAutomationBootstrap(chargeDecode, body); err != nil {
+		return
+	} else if changed {
 		body = normalizedBody
 		reqLog.Info("openai.codex_automation_bootstrap_normalized",
 			zap.String("normalization", "call_output_to_user_message"),
 		)
 	}
-	if normalizedBody, changed := normalizeCodexDelegationBootstrap(body); changed {
+	if normalizedBody, changed, err := normalizeCodexDelegationBootstrap(chargeDecode, body); err != nil {
+		return
+	} else if changed {
 		body = normalizedBody
 		reqLog.Info("openai.codex_delegation_bootstrap_normalized",
 			zap.String("normalization", "call_output_to_user_message"),
@@ -1703,44 +1710,52 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 	return false
 }
 
-func normalizeCodexDelegationBootstrap(body []byte) ([]byte, bool) {
+func normalizeCodexDelegationBootstrap(charge func() error, body []byte) ([]byte, bool, error) {
 	// 已有任务通过 send_message_to_thread 唤醒时会携带 previous_response_id；
 	// 完整历史回放还会带有已配对的调用项。delegation 仍是客户端注入的用户输入，
 	// 不属于这些历史调用的结果，因此允许它与可明确配对的历史上下文共存。
-	return normalizeCodexCallOutputBootstrap(body, isCodexDelegationCandidate, true)
+	return normalizeCodexCallOutputBootstrap(charge, body, isCodexDelegationCandidate, true)
 }
 
-func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
-	return normalizeCodexCallOutputBootstrap(body, isCodexAutomationCandidate, false)
+func normalizeCodexAutomationBootstrap(charge func() error, body []byte) ([]byte, bool, error) {
+	return normalizeCodexCallOutputBootstrap(charge, body, isCodexAutomationCandidate, false)
 }
 
-func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool, allowHistoricalContext bool) ([]byte, bool) {
+// normalizeCodexCallOutputBootstrap decodes all of a body with a codex_app
+// or codex_tui input item, so it takes charge (the k_conv top-up) before the
+// duplicate-member scan and the decode; the only error it returns is a
+// refused charge (written, final).
+func normalizeCodexCallOutputBootstrap(charge func() error, body []byte, isCandidate func(map[string]any) bool, allowHistoricalContext bool) ([]byte, bool, error) {
 	// Every candidate (delegation or automation) is an input item with
 	// namespace codex_app or codex_tui. Without one nothing changes, so skip
 	// the two whole-body decodes (gjson matches escaped keys and values;
 	// bodies with duplicate members are refused below anyway).
 	if !gjson.GetBytes(body, `input.#(namespace=="codex_app")`).Exists() &&
 		!gjson.GetBytes(body, `input.#(namespace=="codex_tui")`).Exists() {
-		return body, false
+		return body, false, nil
+	}
+	if err := charge(); err != nil {
+		return body, false, err
 	}
 	if !hasUniqueJSONMembers(body) {
-		return body, false
+		return body, false, nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
 	var request map[string]any
-	if err := decoder.Decode(&request); err != nil {
-		return body, false
+	if err := service.DecodeFullRequestBody(charge, body, &request); err != nil {
+		if service.IsRequestConversionRefused(err) {
+			return body, false, err
+		}
+		return body, false, nil
 	}
 	if previousResponseID, exists := request["previous_response_id"]; exists {
 		value, ok := previousResponseID.(string)
 		if !ok || (!allowHistoricalContext && strings.TrimSpace(value) != "") {
-			return body, false
+			return body, false, nil
 		}
 	}
 	input, ok := request["input"].([]any)
 	if !ok {
-		return body, false
+		return body, false, nil
 	}
 
 	// Responses built-ins follow the *_call / *_call_output naming convention,
@@ -1757,7 +1772,7 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 			callIDValue, exists := item["call_id"]
 			callID, isString := callIDValue.(string)
 			if exists && (!isString || strings.TrimSpace(callID) != "") {
-				return body, false
+				return body, false, nil
 			}
 			continue
 		}
@@ -1765,13 +1780,13 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 			if allowHistoricalContext && strings.TrimSpace(stringField(item, "id")) != "" {
 				continue
 			}
-			return body, false
+			return body, false, nil
 		}
 		if strings.HasSuffix(typ, "_call") || isResponsesCallOutputType(typ) {
 			if allowHistoricalContext && strings.TrimSpace(stringField(item, "call_id")) != "" {
 				continue
 			}
-			return body, false
+			return body, false, nil
 		}
 	}
 
@@ -1796,13 +1811,13 @@ func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]
 		changed = true
 	}
 	if !changed {
-		return body, false
+		return body, false, nil
 	}
 	normalized, err := json.Marshal(request)
 	if err != nil {
-		return body, false
+		return body, false, nil
 	}
-	return normalized, true
+	return normalized, true, nil
 }
 
 func hasUniqueJSONMembers(body []byte) bool {

@@ -64,10 +64,6 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Request body is empty")
 	}
 
-	// 解析请求以获取 image_size（用于图片计费）
-	imageInputSize := s.extractImageInputSize(body)
-	imageSize := normalizeOpenAIImageSizeTier(imageInputSize)
-
 	switch action {
 	case "generateContent", "streamGenerateContent":
 		// ok
@@ -85,6 +81,18 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	default:
 		return nil, s.writeGoogleError(c, http.StatusNotFound, "Unsupported action: "+action)
 	}
+
+	// The image size read, the identity patch, the schema clean, the tool
+	// reconcile and the v1internal wrap each decode all of the body (k 33-42
+	// in the charge-cover test): the k_conv top-up first (review rr5). A
+	// refusal is written and final.
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
+
+	// 解析请求以获取 image_size（用于图片计费）
+	imageInputSize := s.extractImageInputSize(body)
+	imageSize := normalizeOpenAIImageSizeTier(imageInputSize)
 
 	// 裸模型名（gemini-3.8-flash）按 thinkingConfig 解析到 -low/-medium/-high 变体；
 	// 裸名有显式映射时保持原行为。

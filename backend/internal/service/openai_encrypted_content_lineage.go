@@ -242,12 +242,14 @@ func stripOpenAIInvalidEncryptedContentFromReplayItems(items []json.RawMessage, 
 
 // stripOpenAIInvalidEncryptedContentRaw 是 raw JSON 版剥离：先零成本探测，命中
 // 才解码改写重编码。返回改写后的 payload 与剥离项数；未命中时原样返回。
-func stripOpenAIInvalidEncryptedContentRaw(payload []byte, invalid map[string]struct{}) ([]byte, int, error) {
+// The decode takes charge, the k_conv top-up, first (review rr5); a refused
+// charge is returned as is.
+func stripOpenAIInvalidEncryptedContentRaw(payload []byte, invalid map[string]struct{}, charge func() error) ([]byte, int, error) {
 	if !openAIRawPayloadHasInvalidEncryptedContent(payload, invalid) {
 		return payload, 0, nil
 	}
 	var decoded map[string]any
-	if err := decodeOpenAIJSONUseNumber(payload, &decoded); err != nil {
+	if err := DecodeFullRequestBody(charge, payload, &decoded); err != nil {
 		return payload, 0, err
 	}
 	stripped := stripOpenAIInvalidEncryptedContentItems(decoded, invalid)
@@ -322,14 +324,20 @@ func (s *OpenAIGatewayService) markOpenAIWSInvalidEncryptedContentLineageFromPay
 // stripSessionInvalidEncryptedContentLogged 对 payload 执行会话失效密文剥离并
 // 输出观测日志（logKey / logKey+"_skip"），返回（可能已替换的）payload 与剥离
 // 项数；未命中或剥离失败时原样返回。
+// charge is the decode's k_conv top-up (NoConversionCharge for a WebSocket
+// message); a refused charge is the only error returned (written, final).
 func (s *OpenAIGatewayService) stripSessionInvalidEncryptedContentLogged(
 	payload []byte,
 	invalid map[string]struct{},
 	logKey string,
 	accountID int64,
 	turn int,
-) ([]byte, int) {
-	strippedPayload, strippedCount, stripErr := stripOpenAIInvalidEncryptedContentRaw(payload, invalid)
+	charge func() error,
+) ([]byte, int, error) {
+	strippedPayload, strippedCount, stripErr := stripOpenAIInvalidEncryptedContentRaw(payload, invalid, charge)
+	if IsRequestConversionRefused(stripErr) {
+		return payload, 0, stripErr
+	}
 	if stripErr != nil {
 		logOpenAIWSModeInfo(
 			"%s_skip account_id=%d turn=%d reason=strip_error cause=%s",
@@ -338,7 +346,7 @@ func (s *OpenAIGatewayService) stripSessionInvalidEncryptedContentLogged(
 			turn,
 			truncateOpenAIWSLogValue(stripErr.Error(), openAIWSLogValueMaxLen),
 		)
-		return payload, 0
+		return payload, 0, nil
 	}
 	if strippedCount > 0 {
 		logOpenAIWSModeInfo(
@@ -349,5 +357,5 @@ func (s *OpenAIGatewayService) stripSessionInvalidEncryptedContentLogged(
 			strippedCount,
 		)
 	}
-	return strippedPayload, strippedCount
+	return strippedPayload, strippedCount, nil
 }

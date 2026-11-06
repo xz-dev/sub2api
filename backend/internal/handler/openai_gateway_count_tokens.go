@@ -159,6 +159,11 @@ func (h *OpenAIGatewayHandler) GrokCountTokens(c *gin.Context) {
 		return
 	}
 
+	// The local estimate converts the Anthropic body to Responses: the
+	// k_conv top-up first (rr5). A refusal is written and final.
+	if err := service.ChargeRequestConversion(c); err != nil {
+		return
+	}
 	estimated, err := service.EstimateGrokCountTokens(parsedReq.Body.Bytes())
 	if err != nil {
 		requestLogger(c, "handler.openai_gateway.grok_count_tokens").Warn("grok_count_tokens.local_estimate_failed", zap.Error(err))

@@ -329,7 +329,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			normalized = accountScopedPayload
 		}
 		if responsesLite {
-			litePayload, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(normalized, account)
+			litePayload, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(normalized, account, NoConversionCharge)
 			if liteErr != nil {
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
 					coderws.StatusPolicyViolation,
@@ -632,8 +632,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			// 剥离本会话已知失效的加密项，阻断同一失效密文随历史反复触发上游拒绝。
 			// 历史序列须同步剥离，否则与已剥离的当前 input 项错位，prefix 复用失配。
 			if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, sessionHash); len(invalidDigests) > 0 {
-				strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
-					currentBridgePayload.payloadRaw, invalidDigests, "ingress_ws_http_bridge_invalid_encrypted_lineage_strip", account.ID, turn,
+				// A WebSocket message has no request charge.
+				strippedPayload, strippedCount, _ := s.stripSessionInvalidEncryptedContentLogged(
+					currentBridgePayload.payloadRaw, invalidDigests, "ingress_ws_http_bridge_invalid_encrypted_lineage_strip", account.ID, turn, NoConversionCharge,
 				)
 				if strippedCount > 0 {
 					currentBridgePayload.payloadRaw = strippedPayload
@@ -1505,8 +1506,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		// 剥离本会话已知失效的加密项，阻断同一失效密文随历史反复触发上游拒绝。
 		// 历史序列须同步剥离，否则与已剥离的当前 input 项错位，prefix 复用失配。
 		if invalidDigests := s.sessionInvalidEncryptedContentDigests(groupID, sessionHash); len(invalidDigests) > 0 {
-			strippedPayload, strippedCount := s.stripSessionInvalidEncryptedContentLogged(
-				currentPayload, invalidDigests, "ingress_ws_invalid_encrypted_lineage_strip", account.ID, turn,
+			// A WebSocket message has no request charge.
+			strippedPayload, strippedCount, _ := s.stripSessionInvalidEncryptedContentLogged(
+				currentPayload, invalidDigests, "ingress_ws_invalid_encrypted_lineage_strip", account.ID, turn, NoConversionCharge,
 			)
 			if strippedCount > 0 {
 				currentPayload = strippedPayload

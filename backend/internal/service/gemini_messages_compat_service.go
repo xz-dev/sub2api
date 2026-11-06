@@ -1084,6 +1084,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Request body is empty")
 	}
 
+	// The empty-parts filter, the thought-signature fill and the image size
+	// read decode all of the body (k 17.5-22 in the charge-cover test, above
+	// k_path): the k_conv top-up first (review rr5). A refusal is written
+	// and final.
+	if err := ChargeRequestConversion(c); err != nil {
+		return nil, err
+	}
+
 	// 过滤掉 parts 为空的消息（Gemini API 不接受空 parts）
 	if filteredBody, err := filterEmptyPartsFromGeminiRequest(body); err == nil {
 		body = filteredBody
