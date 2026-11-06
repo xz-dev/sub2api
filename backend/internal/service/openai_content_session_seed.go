@@ -189,15 +189,15 @@ scanRoot:
 // contentSeedDecodeMaxValues: the most JSON values a content-seed field
 // may have to be decoded into its canonical form. A decode costs about
 // 150 bytes per value (rr6 follow-up: a 16 MiB tools array, or a developer
-// message of tiny parts, cost k 22 on the verified-raw path, charged k_skel
-// 6); 4096 values keep it under about 600 KiB.
+// message of tiny parts, cost k 22 on the verified-raw path, charged k_skel,
+// then 6); 4096 values keep it under about 600 KiB.
 const contentSeedDecodeMaxValues = 4096
 
 // contentSeedDecodeMaxBytes: the most bytes a JSON value may have to be
 // decoded on the verified-raw path without a charge (content seed,
 // transcript, tool schema, turn metadata). The value cap alone let one
 // large string through (rr9: a 16 MiB first user message of one escaped
-// string cost k 7-8 on the verified-raw path, charged k_skel 6): the
+// string cost k 7-8 on the verified-raw path, charged k_skel, then 6): the
 // decode copies the string and the re-encode writes it again, up to 6 x
 // for < > & (json.Marshal escapes them). Measured at 32 KiB: about 170 KB
 // allocated for escaped text, about 1.2 MB for a string of only '<'. It

@@ -371,6 +371,6 @@ var coverPrimes = map[string]func(t *testing.T, srv coverServer, path string, bo
 // their charge, except web_search invalid 2 MiB once at +16,480 B (35.39
 // MiB on a 35.37 MiB charge; 27.9 MiB in the other run: the metric counts
 // garbage until the GC sweeps it, so peaks move with GC timing). 64 KiB is
-// 24 x the harness cost and 0.5 % of the smallest asserted charge (12 MiB:
-// k_skel 6 x 2 MiB).
+// 24 x the harness cost and 0.4 % of the smallest asserted charge (16 MiB:
+// k_skel 8 x 2 MiB).
 const chargeCoverAllowance = 64 << 10

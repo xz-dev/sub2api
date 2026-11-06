@@ -70,8 +70,15 @@ const (
 	// (review rr3): at most 4.81 (d10-utext-16), 4.94 on invalid UTF-8 text
 	// (d10-invalid-16, up to its pre-existing 502), 4.12 (d10-text-16), 3.00
 	// (d10-small-items-16), 2.44 (d10-tiny-msgs-16), 1.62 (M0 text-16).
-	// 6 is the worst plus ~20 %. S_h = (320 - 32 - 48) / 6 = 40 MiB >= S.
-	DefaultBodySpoolKSkel float64 = 6
+	// That gave 6. Review rr9 (stop rule): in-process, peak live heap /
+	// body over the whole charge-cover corpus (TestBodySpoolChargeCovers
+	// Allocation p1-p5 and the gen corpus, 2/8/16 MiB), the worst on-list
+	// k is 6.61, the guard probe at 2 MiB (probe_escaped_user_string with
+	// the prompt guard on; the guard's own text copies sit inside k_skel).
+	// 8 = ceil(6.61 x 1.15). S_h = (320 - 32 - 48) / 8 = 30 MiB >= S, so S
+	// stays 16 MiB, but a 16 MiB request is now charged 128 MiB: one fits
+	// an idle 320m hop at a time (two at 6).
+	DefaultBodySpoolKSkel float64 = 8
 	// k_conv: a request a protocol converter rewrites, or that is decoded
 	// whole (every converter and Forward's full decode take it). Measured
 	// in-process: peak live heap / body bytes, default GOGC, no memory
