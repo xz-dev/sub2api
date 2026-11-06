@@ -22,6 +22,11 @@ import (
 // encoded body the largest decoder), and L+1 bytes get the 413 with
 // limit_bytes = L. With L fixed at 16 MiB, bodies from about 12.6 MiB got
 // 503 insufficient_memory on such a hop instead.
+//
+// rr6 fail-safe: L is the limit of a verified Responses fallback request
+// (compact); every other fallback route (here Chat Completions) is charged
+// k_conv from the first byte and its limit is L_conv, with the same
+// properties at that limit.
 func TestBodySpoolFallbackBodyAtLimitFits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := newLargeBodyTestHandler(t, &largeBodyDrainUpstream{}, "oauth")
@@ -35,49 +40,61 @@ func TestBodySpoolFallbackBodyAtLimitFits(t *testing.T) {
 	require.Greater(t, limit, int64(10<<20))
 	require.Less(t, limit, rt.cfg.FallbackLimit)
 
-	body := func(n int64) []byte {
-		head, tail := `{"model":"gpt-5.5","messages":[{"role":"user","content":"`, `"}]}`
-		return []byte(head + string(bytes.Repeat([]byte("a"), int(n)-len(head)-len(tail))) + tail)
+	lConv := conversionLimit(rt.cfg, 320<<20, false, false)
+	t.Logf("L_conv at 320m = %d bytes (%.2f MiB)", lConv, float64(lConv)/(1<<20))
+	require.Less(t, lConv, limit)
+	routes := []struct {
+		path, head, tail string
+		limit            int64
+	}{
+		{"/v1/responses/compact", `{"model":"gpt-5.5","input":[{"role":"user","content":"`, `"}]}`, limit},
+		{"/v1/chat/completions", `{"model":"gpt-5.5","messages":[{"role":"user","content":"`, `"}]}`, lConv},
 	}
-	for _, enc := range []string{"", "zstd"} {
-		wire := body(limit)
-		if enc != "" {
-			wire = encodeBody(t, enc, wire)
+	for _, route := range routes {
+		limit := route.limit
+		body := func(n int64) []byte {
+			return []byte(route.head + string(bytes.Repeat([]byte("a"), int(n)-len(route.head)-len(route.tail))) + route.tail)
 		}
-		c, rec := newLargeBodyTestContext("/v1/chat/completions", wire, "")
-		if enc != "" {
-			c.Request.Header.Set("Content-Encoding", enc)
-		}
-		require.True(t, ingestRequestBody(c, h.cfg), "%q: a body of L fits: %s", enc, rec.Body.String())
-		got, err := readPrereadBody(c)
-		require.NoError(t, err)
-		require.Len(t, got, int(limit))
-		require.Nil(t, chargeGuardDecode(c, func() bool { return true }, got), "%q: the guard decode fits too", enc)
-		releaseRequestBodySpool(c)
-		require.Zero(t, rt.meter.Outstanding())
+		for _, enc := range []string{"", "zstd"} {
+			wire := body(limit)
+			if enc != "" {
+				wire = encodeBody(t, enc, wire)
+			}
+			c, rec := newLargeBodyTestContext(route.path, wire, "")
+			if enc != "" {
+				c.Request.Header.Set("Content-Encoding", enc)
+			}
+			require.True(t, ingestRequestBody(c, h.cfg), "%q: a body of L fits: %s", enc, rec.Body.String())
+			got, err := readPrereadBody(c)
+			require.NoError(t, err)
+			require.Len(t, got, int(limit))
+			require.Nil(t, chargeGuardDecode(c, func() bool { return true }, got), "%q: the guard decode fits too", enc)
+			releaseRequestBodySpool(c)
+			require.Zero(t, rt.meter.Outstanding())
 
-		wire = body(limit + 1)
-		if enc != "" {
-			wire = encodeBody(t, enc, wire)
+			wire = body(limit + 1)
+			if enc != "" {
+				wire = encodeBody(t, enc, wire)
+			}
+			c, rec = newLargeBodyTestContext(route.path, wire, "")
+			if enc != "" {
+				c.Request.Header.Set("Content-Encoding", enc)
+			}
+			require.False(t, ingestRequestBody(c, h.cfg), enc)
+			require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+			var resp struct {
+				Error struct {
+					Code       string `json:"code"`
+					Hop        string `json:"hop"`
+					LimitBytes int64  `json:"limit_bytes"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.Equal(t, "request_too_large", resp.Error.Code)
+			require.Equal(t, "sub2api", resp.Error.Hop)
+			require.Equal(t, limit, resp.Error.LimitBytes)
+			require.Zero(t, rt.meter.Outstanding())
 		}
-		c, rec = newLargeBodyTestContext("/v1/chat/completions", wire, "")
-		if enc != "" {
-			c.Request.Header.Set("Content-Encoding", enc)
-		}
-		require.False(t, ingestRequestBody(c, h.cfg), enc)
-		require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
-		var resp struct {
-			Error struct {
-				Code       string `json:"code"`
-				Hop        string `json:"hop"`
-				LimitBytes int64  `json:"limit_bytes"`
-			} `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-		require.Equal(t, "request_too_large", resp.Error.Code)
-		require.Equal(t, "sub2api", resp.Error.Hop)
-		require.Equal(t, limit, resp.Error.LimitBytes)
-		require.Zero(t, rt.meter.Outstanding())
 	}
 
 	// Under load the body still gets the named 503 with the bytes needed.
@@ -85,7 +102,8 @@ func TestBodySpoolFallbackBodyAtLimitFits(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, busy.Add(100<<20))
 	defer busy.Release()
-	c, rec := newLargeBodyTestContext("/v1/chat/completions", body(limit), "")
+	head, tail := `{"model":"gpt-5.5","input":[{"role":"user","content":"`, `"}]}`
+	c, rec := newLargeBodyTestContext("/v1/responses/compact", []byte(head+string(bytes.Repeat([]byte("a"), int(limit)-len(head)-len(tail)))+tail), "")
 	require.False(t, ingestRequestBody(c, h.cfg))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	var resp struct {

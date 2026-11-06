@@ -4,6 +4,7 @@ package handler
 
 import (
 	"bytes"
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,9 +151,17 @@ func runCoverCaseBody(t *testing.T, srv coverServer, path string, body []byte, c
 	charged := requestChargedBytes(srv.cfg)
 	assert.Zero(t, charged(), "a charge outlived its request")
 	srv.cfg.Gateway.CodexImageGenerationBridgeEnabled = codex
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	sent := body
+	if header["Content-Encoding"] == "gzip" { // rr6: send it compressed
+		var zb bytes.Buffer
+		zw := gzip.NewWriter(&zb)
+		_, _ = zw.Write(body)
+		_ = zw.Close()
+		sent = zb.Bytes()
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(sent))
 	if chunked {
-		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.Body = io.NopCloser(bytes.NewReader(sent))
 		req.ContentLength = -1
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -300,7 +309,14 @@ func coverSelected(name, only string) bool {
 		return true
 	}
 	for _, part := range strings.Split(only, "|") {
-		if part != "" && strings.Contains(name, part) {
+		if part == "" {
+			continue
+		}
+		all := true // rr6: "a&b" needs both
+		for _, sub := range strings.Split(part, "&") {
+			all = all && strings.Contains(name, sub)
+		}
+		if all {
 			return true
 		}
 	}

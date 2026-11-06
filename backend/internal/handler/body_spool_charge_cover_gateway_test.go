@@ -25,6 +25,9 @@ func coverGatewayAccount(kind string) (service.Account, string) {
 		a.Platform, a.Type = service.PlatformAntigravity, service.AccountTypeOAuth
 		a.Credentials = map[string]any{"access_token": "ag-token", "project_id": "p-1",
 			"expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339)}
+	case "anthropic-apikey": // rr6
+		a.Platform, a.Type = service.PlatformAnthropic, service.AccountTypeAPIKey
+		a.Credentials = map[string]any{"api_key": "sk-ant-test", "base_url": "https://api.anthropic.com"}
 	case "grok-apikey":
 		a.Platform, a.Type = service.PlatformGrok, service.AccountTypeAPIKey
 		a.Credentials = map[string]any{"api_key": "xai-test", "base_url": "https://api.x.ai"}
@@ -117,6 +120,11 @@ func coverGatewayCombos() []coverCombo {
 		{"antigravity/v1/messages", "antigravity-oauth", "claude", cm, "/antigravity/v1/messages", "/antigravity/v1/messages", true, messages},
 		{"antigravity/count_tokens", "antigravity-oauth", "claude", cm, "/antigravity/v1/messages/count_tokens", "/antigravity/v1/messages/count_tokens", true, count},
 		{"antigravity/v1beta/generateContent", "antigravity-oauth", "gemini", gm, "/antigravity/v1beta/models/*modelAction", "/antigravity/v1beta/models/" + gm + ":generateContent", true, models},
+		// rr6: an Anthropic API-key account.
+		{"v1/messages", "anthropic-apikey", "claude", cm, "/v1/messages", "/v1/messages", false, messages},
+		{"count_tokens", "anthropic-apikey", "claude", cm, "/v1/messages/count_tokens", "/v1/messages/count_tokens", false, count},
+		{"chat/completions", "anthropic-apikey", "chat", cm, "/v1/chat/completions", "/v1/chat/completions", false, chat},
+		{"v1/responses", "anthropic-apikey", "responses", cm, "/v1/responses", "/v1/responses", false, responses},
 		{"web_search", "grok-apikey", "websearch", "", "/v1/web_search", "/v1/web_search", false, func(h *GatewayHandler) gin.HandlerFunc { return h.WebSearch }},
 	}
 	var out []coverCombo

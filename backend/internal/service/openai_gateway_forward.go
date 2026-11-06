@@ -19,6 +19,12 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	// Fail-safe charge, account half (review rr6): the k_conv top-up first
+	// unless the account is verified raw (request_raw_list.go). The handler
+	// calls it before each attempt too; the top-up is taken once.
+	if err := s.ChargeRequestUnlessVerifiedRaw(c, account); err != nil {
+		return nil, err
+	}
 	rememberOpenAISessionAffinityID(c, body, false)
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
