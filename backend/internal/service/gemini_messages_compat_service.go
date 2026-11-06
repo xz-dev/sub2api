@@ -3605,6 +3605,11 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 }
 
 func normalizeGeminiRequestForAIStudio(body []byte) []byte {
+	// Decode only when a tool needs the rename (rr6 4b: the whole-body map
+	// decode cost about k 20 over the converted body on every request).
+	if !geminiRequestNeedsGoogleSearchRename(body) {
+		return body
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return body
@@ -3642,6 +3647,28 @@ func normalizeGeminiRequestForAIStudio(body []byte) []byte {
 		return body
 	}
 	return normalized
+}
+
+// geminiRequestNeedsGoogleSearchRename: body's root tools array has an
+// object with googleSearch and no google_search (the last root "tools"
+// member, as encoding/json keeps it). It reads raw JSON, no decode.
+func geminiRequestNeedsGoogleSearchRename(body []byte) bool {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return false
+	}
+	tools := lastRawObjectMember(root, "tools")
+	if !tools.IsArray() {
+		return false
+	}
+	needs := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if tool.IsObject() && lastRawObjectMember(tool, "googleSearch").Exists() && !lastRawObjectMember(tool, "google_search").Exists() {
+			needs = true
+		}
+		return !needs
+	})
+	return needs
 }
 
 func isClaudeWebSearchToolMap(tool map[string]any) bool {
