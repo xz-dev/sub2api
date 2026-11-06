@@ -154,14 +154,24 @@ func setBodySpoolDefaults() {
 	viper.SetDefault("gateway.body_spool.ticket_forward_hosts", []string{})
 }
 
+// MinBodySpoolThreshold is the smallest T: the verified-raw path decodes a
+// JSON value of up to 32 KiB without a charge (contentSeedDecodeMaxBytes,
+// derivedKeyBudget), which keeps that decision the same on the skeleton
+// and on the whole body only while every spooled string is at least as
+// large.
+const MinBodySpoolThreshold = 32 << 10
+
 // validateBodySpool refuses to start on a bad spool setup: tmpfs/ramfs, a
-// wrong mode, a named file, no O_TMPFILE, a fallback limit above 16 MiB, or
-// no cgroup memory limit to charge against.
+// wrong mode, a named file, no O_TMPFILE, T below 32 KiB, a fallback limit
+// above 16 MiB, or no cgroup memory limit to charge against.
 func validateBodySpool(c GatewayBodySpoolConfig) error {
 	if !c.Enabled {
 		return nil
 	}
 	c = c.Effective()
+	if c.Threshold < MinBodySpoolThreshold {
+		return fmt.Errorf("gateway.body_spool.threshold must be at least %d", MinBodySpoolThreshold)
+	}
 	if c.FallbackLimit > DefaultBodySpoolFallbackLimit {
 		return fmt.Errorf("gateway.body_spool.fallback_limit must be at most %d", DefaultBodySpoolFallbackLimit)
 	}
