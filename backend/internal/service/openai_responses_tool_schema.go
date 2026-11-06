@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+	"unsafe"
 )
 
 const (
@@ -18,8 +19,12 @@ const (
 	openAIResponsesToolSchemaMaxBodySize = 256 << 20
 	openAIResponsesToolSchemaMaxDepth    = 128
 	openAIResponsesToolSchemaMaxEdits    = 1 << 20
-	openAIResponsesObjectUnionMaxSize    = 1 << 20
-	openAIResponsesObjectUnionMaxDepth   = 32
+	// The union check decodes the schema and copies each oneOf/anyOf
+	// subtree again per level (rr9 measured a 15-level chain: 2.0 MB at 64
+	// KiB, 32.5 MB at 1 MiB), so it takes the contentSeedDecodeMaxBytes and
+	// contentSeedDecodeMaxValues caps; a larger schema is sent unchanged.
+	openAIResponsesObjectUnionMaxSize  = contentSeedDecodeMaxBytes
+	openAIResponsesObjectUnionMaxDepth = 32
 
 	openAIResponsesToolSchemaFallbackType = `"object"`
 )
@@ -361,7 +366,8 @@ var (
 )
 
 func openAIMissingRootObjectUnionTypeEdit(raw []byte, absoluteStart int) (openAIResponsesToolSchemaEdit, bool) {
-	if len(raw) > openAIResponsesObjectUnionMaxSize {
+	if len(raw) > openAIResponsesObjectUnionMaxSize ||
+		rawJSONValuesAbove(unsafe.String(unsafe.SliceData(raw), len(raw)), contentSeedDecodeMaxValues) {
 		return openAIResponsesToolSchemaEdit{}, false
 	}
 	if !bytes.Contains(raw, openAIResponsesJSONOneOfKey) && !bytes.Contains(raw, openAIResponsesJSONAnyOfKey) &&

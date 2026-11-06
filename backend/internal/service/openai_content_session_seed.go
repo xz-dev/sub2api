@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	"github.com/tidwall/gjson"
 )
 
@@ -192,18 +193,42 @@ scanRoot:
 // 6); 4096 values keep it under about 600 KiB.
 const contentSeedDecodeMaxValues = 4096
 
+// contentSeedDecodeMaxBytes: the most bytes a JSON value may have to be
+// decoded on the verified-raw path without a charge (content seed,
+// transcript, tool schema, turn metadata). The value cap alone let one
+// large string through (rr9: a 16 MiB first user message of one escaped
+// string cost k 7-8 on the verified-raw path, charged k_skel 6): the
+// decode copies the string and the re-encode writes it again, up to 6 x
+// for < > & (json.Marshal escapes them). Measured at 32 KiB: about 170 KB
+// allocated for escaped text, about 1.2 MB for a string of only '<'. It
+// must not exceed bodyspool's threshold T (64 KiB by default, the smallest
+// spooled string), which keeps the decision the same on the skeleton and
+// on the whole body; see contentSeedDecodeBounded.
+const contentSeedDecodeMaxBytes = 32 << 10
+
+// contentSeedDecodeBounded reports whether the JSON text raw may be
+// decoded into its canonical form: at most contentSeedDecodeMaxBytes bytes
+// and contentSeedDecodeMaxValues values, and no spool marker. A field with
+// a spooled string is above the byte cap on the whole body (the string
+// alone has at least T bytes), so the marker test gives the skeleton the
+// same answer; a field without one is the same bytes on both. (A body
+// that holds the text \u0000lrc itself is treated alike on both.)
+func contentSeedDecodeBounded(raw string) bool {
+	return len(raw) <= contentSeedDecodeMaxBytes && !bodyspool.MayHoldMarker(raw) &&
+		!rawJSONValuesAbove(raw, contentSeedDecodeMaxValues)
+}
+
 // writeContentSeedJSON writes one field of the content session seed:
-// canonical JSON (decoded and re-encoded, keys sorted) when it has at most
-// contentSeedDecodeMaxValues values, else "raw:" and the field as sent,
-// which allocates nothing beyond the copy. The value count is the same on
-// the skeleton and on the whole body (a spooled string is one marker
-// string), and a raw field's markers are expanded when the seed is hashed
-// (deriveOpenAISessionHashesForRequest), so both give the same hash. A
-// field above the bound gets a seed part that differs from the old
-// canonical one (one sticky-session miss after the upgrade) and that is
-// stable while the client resends the same bytes.
+// canonical JSON (decoded and re-encoded, keys sorted) when
+// contentSeedDecodeBounded, else "raw:" and the field as sent, which
+// allocates nothing beyond the copy. The decision is the same on the
+// skeleton and on the whole body, and a raw field's markers are expanded
+// when the seed is hashed (deriveOpenAISessionHashesForRequest), so both
+// give the same hash. A field above either cap gets a seed part that
+// differs from the old canonical one (one sticky-session miss after the
+// upgrade) and that is stable while the client resends the same bytes.
 func writeContentSeedJSON(b *strings.Builder, raw string) {
-	if rawJSONValuesAbove(raw, contentSeedDecodeMaxValues) {
+	if !contentSeedDecodeBounded(raw) {
 		_, _ = b.WriteString("raw:")
 		_, _ = b.WriteString(raw)
 		return

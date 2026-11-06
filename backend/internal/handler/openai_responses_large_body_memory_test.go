@@ -190,13 +190,20 @@ func largeBodyTestAccounts(accountType string) []service.Account {
 
 func newLargeBodyTestHandlerWithAccounts(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account) *OpenAIGatewayHandler {
 	t.Helper()
+	return newLargeBodyTestHandlerWithDeps(t, upstream, accounts, nil, nil)
+}
+
+// newLargeBodyTestHandlerWithDeps is newLargeBodyTestHandlerWithAccounts
+// with a gateway cache and a setting service (nil: none).
+func newLargeBodyTestHandlerWithDeps(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account, cache service.GatewayCache, settings *service.SettingService) *OpenAIGatewayHandler {
+	t.Helper()
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.MaxBodySize = 256 << 20
 	gatewayService := service.NewOpenAIGatewayService(
 		openAIImagesFailoverAccountRepo{accounts: accounts},
-		nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, cache, cfg, nil, nil, nil, nil, nil,
 		upstream,
-		nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, settings, nil,
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)

@@ -157,14 +157,16 @@ func openAICyberTranscriptItemIsModelGenerated(item gjson.Result) bool {
 }
 
 // cyberTranscriptCanonical is an item (or instructions) in the transcript
-// hash: canonical JSON when it has at most contentSeedDecodeMaxValues
-// values, else the raw bytes. A decode costs about 150 bytes per value
-// and runs on every request while the session block is on (rr6 follow-up:
-// one input item of many small parts on the verified-raw path). Block keys
-// are written and looked up with the same form; a large item blocked
-// before the upgrade is keyed again on its next block.
+// hash: canonical JSON when contentSeedDecodeBounded (at most
+// contentSeedDecodeMaxBytes bytes and contentSeedDecodeMaxValues values),
+// else the raw bytes. A decode costs about 150 bytes per value plus about
+// 2-6 x the string bytes, and runs on every request while the session
+// block is on (rr6 follow-up: one input item of many small parts; rr9: one
+// item of a single large escaped string; both on the verified-raw path).
+// Block keys are written and looked up with the same form; a large item
+// blocked before the upgrade is keyed again on its next block.
 func cyberTranscriptCanonical(raw string) string {
-	if rawJSONValuesAbove(raw, contentSeedDecodeMaxValues) {
+	if !contentSeedDecodeBounded(raw) {
 		return raw
 	}
 	return normalizeCompatSeedJSON(json.RawMessage(raw))
