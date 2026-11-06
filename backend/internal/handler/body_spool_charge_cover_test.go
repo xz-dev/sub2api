@@ -318,7 +318,10 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 					body := sh.body(size)
 					hits := srv.up.blockScopeHits.Load()
 					r := runCoverCaseBody(t, *srv, cb.path, body, sh.codex, sh.header, sh.chunked)
-					if cb.sessionBlock {
+					// A request the prompt guard refuses (fail-closed 503, e.g. on
+					// a 16M-digit number: adv_num_*_int) ends before the lookup.
+					guardRefused := r.status == http.StatusServiceUnavailable && strings.Contains(r.reply, "prompt_guard_unavailable")
+					if cb.sessionBlock && !guardRefused {
 						assert.Greater(t, srv.up.blockScopeHits.Load(), hits, "the session-block transcript lookup did not run")
 					}
 					logCoverResult(t, name, r)

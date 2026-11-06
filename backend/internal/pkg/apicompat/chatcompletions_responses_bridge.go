@@ -1090,13 +1090,8 @@ func responsesContentPartsToChatContent(rawParts []json.RawMessage, role string)
 		}
 	}
 
-	if !hasNonText {
-		joined, _ := json.Marshal(strings.Join(textParts, "\n\n"))
-		return joined, nil
-	}
-	if role != "user" {
-		joined, _ := json.Marshal(strings.Join(textParts, "\n\n"))
-		return joined, nil
+	if !hasNonText || role != "user" {
+		return marshalJSONString(strings.Join(textParts, "\n\n")), nil
 	}
 	if len(chatParts) == 0 {
 		empty, _ := json.Marshal("")
@@ -1117,7 +1112,7 @@ func chatContentFromSingleResponsesPart(partType string, part map[string]json.Ra
 			ImageURL: &ChatImageURL{URL: imageURL},
 		}})
 	default:
-		return json.Marshal(rawString(part["text"]))
+		return marshalJSONString(rawString(part["text"])), nil
 	}
 }
 
