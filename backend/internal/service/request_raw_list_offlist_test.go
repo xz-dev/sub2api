@@ -82,14 +82,15 @@ func TestChargeRequestOffListOutsideCoveredRoute(t *testing.T) {
 func TestVerifiedRawReasonNamesOnly(t *testing.T) {
 	long := strings.Repeat("x", 1<<20)
 	cases := []struct{ body, want string }{
-		{`{"conversation":"secret-value"}`, "root member conversation"},
+		{`{"prompt":"secret-value"}`, "root member prompt"},
 		{`{"` + long + `":1}`, "root member " + strings.Repeat("x", 64) + "..."},
 		{`{"we ird\"":1}`, "root member _"},
-		{`{"input":[{"type":"web_search_call","query":"secret"}]}`, "root member input: item type web_search_call"},
+		{`{"input":[{"type":"image_generation_call","result":"secret"}]}`, "root member input: item type image_generation_call"},
 		{`{"input":[{"type":{"secret":"v"}}]}`, "root member input: item type not a plain string"},
 		{`{"input":[{"type":"a b<c>"}]}`, "root member input: item type a_b_c_"},
-		{`{"input":[{"role":"user","content":[{"type":"input_file","file_data":"secret"}]}]}`, "root member input: content part type input_file"},
-		{`{"tools":[{"type":"web_search","secret":"v"}]}`, "root member tools: tool type web_search"},
+		{`{"input":[{"role":"user","content":[{"type":"input_audio","data":"secret"}]}]}`, "root member input: content part type input_audio"},
+		{`{"tools":[{"type":"image_generation","secret":"v"}]}`, "root member tools: tool type image_generation"},
+		{`{"input":[{"type":"reasoning","id":"rs_1","id":"secret"}]}`, "root member input: item duplicate member id"},
 		{`{"tools":[{"type":["secret"]}]}`, "root member tools: tool type not a plain string"},
 		{`{"input":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"secret"}]}]}`, "root member input: reasoning content"},
 	}
