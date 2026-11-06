@@ -98,6 +98,8 @@ type bodySpoolState struct {
 	// with the prompt guard on. Fallback paths (k_path) have no such
 	// envelope, so the guard's decode is charged on top (chargeGuardDecode).
 	covered bool
+	// kConv is the request's k_conv, from its charge class (kConvClasses).
+	kConv float64
 	// chargedAtRelease is the charge's size when it was released; it tells
 	// ReleaseLargeRequestState whether this was a large request.
 	chargedAtRelease int64
@@ -315,6 +317,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 	case responsesFallback:
 		c.Set(service.LargeRequestRouteClassKey, "responses_encoded")
 	}
+	st.kConv = kConvFor(rt.cfg, kConvClassFor(c, covered, responsesFallback))
 	limit, k := fallbackLimit(rt.cfg, st.charge.Limit()), rt.cfg.KPath
 	switch {
 	case covered:
@@ -323,7 +326,7 @@ func ingestRequestBody(c *gin.Context, cfg *config.Config) bool {
 			limit = rt.cfg.TicketedInlineLimit
 		}
 	case !responsesFallback:
-		limit, k = conversionLimit(rt.cfg, st.charge.Limit(), false, false), rt.cfg.KConv
+		limit, k = conversionLimit(rt.cfg, st.charge.Limit(), false, false, st.kConv), st.kConv
 	}
 	// prepaid: inline (or fallback) bytes covered before reading, in whole
 	// granules. At least the first granule, so the first buffer is charged

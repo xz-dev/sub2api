@@ -101,9 +101,7 @@ func TestBodySpoolClientShapesRawPath(t *testing.T) {
 			chargeK := float64(r.PeakCharge) / float64(r.bytes)
 			t.Logf("CLIENT %s listed=%v reason=%q status=%d calls=%d bytes=%d k=%.2f charge_k=%.2f live_k=%.2f excess=%d unchanged=%v",
 				cl.name, listed, reason, r.status, r.calls, r.bytes, k, chargeK, float64(r.PeakHeap)/float64(r.bytes), r.Excess, unchanged)
-			mode := coverAssertMode(r, bodySpoolRuntimeFor(srv.cfg).cfg.KConv)
-			t.Logf("CLIENT %s mode %s", cl.name, mode)
-			assertChargeCoversMode(t, r.chargeCoverReading, mode)
+			assertChargeCovers(t, r.chargeCoverReading)
 			why, off := coverClientsOffList[cl.name]
 			if off {
 				assert.False(t, listed, "%s is on the list now; drop it from coverClientsOffList (%s)", cl.name, why)
@@ -114,7 +112,7 @@ func TestBodySpoolClientShapesRawPath(t *testing.T) {
 			}
 			assert.Equal(t, http.StatusOK, r.status, r.reply)
 			if _, charged := coverClientsCharged[cl.name]; charged {
-				assert.GreaterOrEqual(t, chargeK, bodySpoolRuntimeFor(srv.cfg).cfg.KConv-0.5, "the k_conv top-up was taken")
+				assert.GreaterOrEqual(t, chargeK, kConvFor(bodySpoolRuntimeFor(srv.cfg).cfg, "responses")-0.5, "the k_conv top-up was taken")
 				return
 			}
 			kSkel := bodySpoolRuntimeFor(srv.cfg).cfg.KSkel
