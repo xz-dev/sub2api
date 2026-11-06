@@ -30,7 +30,7 @@ func normalizeOpenAIResponsesLegacyIngressWithConfig(cfg *config.Config, body []
 	view := parseRawJSONView(body)
 	if view.IsObject() && gjson.ValidBytes(body) {
 		hasLegacyField := false
-		view.ForEach(func(key, _ gjson.Result) bool {
+		forEachRawJSONMember(view, func(key, _ gjson.Result) bool { // names only: nothing unescaped (rr10)
 			switch key.Str {
 			case "messages", "prompt", "commands":
 				hasLegacyField = true

@@ -42,7 +42,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 	// Read the input from body instead of the decoder's body-sized copy when
 	// the bytes are identical, so that copy is garbage before the conversion.
-	if in := parseRawJSONView(body).Get("input"); in.Index > 0 && in.Index+len(in.Raw) <= len(body) {
+	if in := firstRawJSONMember(parseRawJSONView(body), "input"); in.Index > 0 && in.Index+len(in.Raw) <= len(body) {
 		if view := body[in.Index : in.Index+len(in.Raw) : in.Index+len(in.Raw)]; bytes.Equal(view, responsesReq.Input) {
 			responsesReq.Input = view
 		}

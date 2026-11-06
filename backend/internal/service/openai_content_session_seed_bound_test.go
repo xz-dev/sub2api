@@ -15,7 +15,7 @@ import (
 
 func contentSeedJSONForTest(raw string) string {
 	var b strings.Builder
-	writeContentSeedJSON(&b, raw)
+	writeContentSeedJSON(&b, newDerivedKeyBudget(), raw)
 	return b.String()
 }
 
@@ -38,7 +38,7 @@ func TestContentSeedJSONBounded(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	writeContentSeedJSON(&b, tools)
+	writeContentSeedJSON(&b, newDerivedKeyBudget(), tools)
 	runtime.ReadMemStats(&after)
 	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(4<<10), "a large field is not decoded")
 }
@@ -77,15 +77,15 @@ func TestContentSeedJSONBoundedInBytes(t *testing.T) {
 	require.Greater(t, len(big), contentSeedDecodeMaxBytes)
 	require.False(t, rawJSONValuesAbove(big, contentSeedDecodeMaxValues))
 	require.Equal(t, "raw:"+big, contentSeedJSONForTest(big))
-	require.Equal(t, big, cyberTranscriptCanonical(big))
+	require.Equal(t, big, cyberTranscriptCanonical(newDerivedKeyBudget(), big))
 
 	var b strings.Builder
 	b.Grow(len(big) + 8)
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	writeContentSeedJSON(&b, big)
-	_ = cyberTranscriptCanonical(big)
+	writeContentSeedJSON(&b, newDerivedKeyBudget(), big)
+	_ = cyberTranscriptCanonical(newDerivedKeyBudget(), big)
 	runtime.ReadMemStats(&after)
 	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(4<<10), "a large string is not decoded")
 
@@ -93,7 +93,7 @@ func TestContentSeedJSONBoundedInBytes(t *testing.T) {
 	require.Equal(t, normalizeCompatSeedJSON(rawJSONView(atCap)), contentSeedJSONForTest(atCap))
 	marker := `["x\u0000lrc0123:0\u0000"]`
 	require.Equal(t, "raw:"+marker, contentSeedJSONForTest(marker))
-	require.Equal(t, marker, cyberTranscriptCanonical(marker))
+	require.Equal(t, marker, cyberTranscriptCanonical(newDerivedKeyBudget(), marker))
 }
 
 // TestBoundedDecodesSkipLargeValues (rr9): the tool-schema union check and
