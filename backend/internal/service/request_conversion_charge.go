@@ -54,9 +54,12 @@ func NoConversionCharge() error { return nil }
 // returns its error (IsRequestConversionRefused: the 413/503 is written)
 // and leaves dst untouched. charge is RequestConversionCharger(c), a
 // charger a caller passed down, or NoConversionCharge for a body without a
-// request charge (a WebSocket message). Every full decode in service and
-// handler goes through here or takes ChargeRequestConversion first
-// (TestRequestConvertersChargeFirst; the charge-cover property test).
+// request charge (a WebSocket message). Not every full decode goes through
+// here (review rr6 found three that did not): the safety net is the
+// fail-safe charge in request_raw_list.go, which takes the k_conv top-up up
+// front for any request or account not on the verified-raw list. The
+// static check (TestRequestConvertersChargeFirst) knows only the listed
+// converters and this door; the charge-cover property test is the gate.
 func DecodeFullRequestBody(charge func() error, body []byte, dst any) error {
 	if err := charge(); err != nil {
 		return err
