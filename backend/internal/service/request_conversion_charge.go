@@ -57,8 +57,10 @@ func NoConversionCharge() error { return nil }
 // request charge (a WebSocket message). Not every full decode goes through
 // here (review rr6 found three that did not): the safety net is the
 // fail-safe charge in request_raw_list.go, which takes the k_conv top-up up
-// front for any request or account not on the verified-raw list. The
-// static check (TestRequestConvertersChargeFirst) knows only the listed
+// front for any request or account not on the verified-raw list. Every
+// other direct decode is classified in requestDecodeSites
+// (TestRequestDecodeSitesAreClassified: an unlisted one fails); the
+// charge-first rule (TestRequestConvertersChargeFirst) covers the listed
 // converters and this door; the charge-cover property test is the gate.
 func DecodeFullRequestBody(charge func() error, body []byte, dst any) error {
 	if err := charge(); err != nil {
