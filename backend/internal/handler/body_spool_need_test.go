@@ -49,7 +49,8 @@ func TestBodySpoolMemoryRefusalNamesRequestNeed(t *testing.T) {
 				full := chargeBytes(k, roundUpGranule(16*mib)) + bodyspool.ReadBufferBytes
 				require.Equal(t, full, need, "the whole up-front charge: k_skel x N + the read buffer")
 			}},
-		{name: "fallback/content-length", path: "/v1/chat/completions", size: 8 * mib, current: 200 * mib,
+		// rr6: the k_path fallback route is compact (Chat Completions is k_conv).
+		{name: "fallback/content-length", path: "/v1/responses/compact", size: 8 * mib, current: 200 * mib,
 			want: func(t *testing.T, need, _ int64, k float64) {
 				require.Equal(t, chargeBytes(k, roundUpGranule(8*mib+1)), need, "the whole up-front charge: k_path x (N+1)")
 			}},
@@ -58,7 +59,7 @@ func TestBodySpoolMemoryRefusalNamesRequestNeed(t *testing.T) {
 				require.Greater(t, need, free, "charged so far + the refused step")
 				require.LessOrEqual(t, need, free+mib)
 			}},
-		{name: "fallback/chunked", path: "/v1/chat/completions", size: 8 * mib, chunked: true, current: 200 * mib,
+		{name: "fallback/chunked", path: "/v1/responses/compact", size: 8 * mib, chunked: true, current: 200 * mib,
 			want: func(t *testing.T, need, free int64, _ float64) {
 				require.Greater(t, need, free, "charged so far + the refused step")
 				require.LessOrEqual(t, need, free+mib)

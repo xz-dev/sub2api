@@ -180,6 +180,9 @@ func largeBodyTestAccounts(accountType string) []service.Account {
 			if accountType == "apikey_chat" { // Responses -> Chat Completions
 				accounts[i].Extra["openai_responses_supported"] = false
 			}
+			if accountType == "apikey" { // the verified-raw account (rr6 fail-safe)
+				accounts[i].Extra["openai_responses_mode"] = "force_responses"
+			}
 		}
 	}
 	return accounts

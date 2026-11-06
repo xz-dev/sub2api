@@ -53,7 +53,14 @@ func TestBodySpoolEncodedBodyChargedDecoded(t *testing.T) {
 	for _, enc := range []string{"gzip", "zstd", "deflate"} {
 		z := encodeBody(t, enc, plain)
 		require.Less(t, len(z), 1<<20, enc)
-		for _, path := range []string{"/v1/responses", "/v1/chat/completions"} {
+		// rr6 fail-safe: an encoded Responses body is a Responses fallback
+		// request (L, k_path); Chat Completions is charged k_conv (L_conv).
+		for _, route := range []struct {
+			path  string
+			limit int64
+			k     float64
+		}{{"/v1/responses", limit, rt.cfg.KPath}, {"/v1/chat/completions", conversionLimit(rt.cfg, 320<<20, false, false), rt.cfg.KConv}} {
+			path, limit := route.path, route.limit
 			c, rec := newLargeBodyTestContext(path, z, "")
 			c.Request.Header.Set("Content-Encoding", enc)
 			require.False(t, ingestRequestBody(c, h.cfg), "%s %s: an encoded body above L is refused", enc, path)
@@ -71,9 +78,9 @@ func TestBodySpoolEncodedBodyChargedDecoded(t *testing.T) {
 			require.Equal(t, "request_too_large", resp.Error.Code)
 			require.Equal(t, "sub2api", resp.Error.Hop)
 			require.Equal(t, limit, resp.Error.LimitBytes)
-			// Charged k_path × the decoded bytes read (L plus one read), not
-			// the compressed size.
-			require.GreaterOrEqual(t, peak, chargeBytes(rt.cfg.KPath, limit), "%s %s: charged on decoded bytes", enc, path)
+			// Charged k × the decoded bytes read (the limit plus one read),
+			// not the compressed size.
+			require.GreaterOrEqual(t, peak, chargeBytes(route.k, limit), "%s %s: charged on decoded bytes", enc, path)
 			require.Zero(t, rt.meter.Outstanding())
 		}
 	}
