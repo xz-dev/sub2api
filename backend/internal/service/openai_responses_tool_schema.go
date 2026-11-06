@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
 )
@@ -654,17 +655,103 @@ func decodeOpenAIResponsesJSONString(raw []byte) (string, error) {
 	return decoded, nil
 }
 
+// openAIResponsesJSONStringEquals reports whether the JSON string literal
+// raw decodes to want. It compares escapes in place and allocates nothing
+// (review rr10: one strconv.Unquote of a body-sized escaped member name per
+// candidate cost k ~20). A decoded byte takes 1 to 6 raw bytes, so a
+// literal shorter than want or longer than 6 × len(want) is rejected
+// before the walk, and the walk reads at most 6 × len(want) bytes.
 func openAIResponsesJSONStringEquals(raw []byte, want string) bool {
 	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
 		return false
 	}
-	if !bytes.Contains(raw, []byte{'\\'}) {
-		return bytes.Equal(raw[1:len(raw)-1], []byte(want))
+	body := raw[1 : len(raw)-1]
+	if len(body) < len(want) || len(body) > 6*len(want) {
+		return false
 	}
-	decoded, err := decodeOpenAIResponsesJSONString(raw)
-	return err == nil && decoded == want
+	j := 0
+	for i := 0; i < len(body); {
+		c := body[i]
+		if c != '\\' {
+			if j >= len(want) || want[j] != c {
+				return false
+			}
+			i++
+			j++
+			continue
+		}
+		if i+1 >= len(body) {
+			return false
+		}
+		var r rune
+		switch body[i+1] {
+		case '"', '\\', '/':
+			r = rune(body[i+1])
+		case 'b':
+			r = '\b'
+		case 'f':
+			r = '\f'
+		case 'n':
+			r = '\n'
+		case 'r':
+			r = '\r'
+		case 't':
+			r = '\t'
+		case 'u':
+			if r = openAIResponsesJSONHex4(body, i+2); r < 0 {
+				return false
+			}
+			i += 4
+		default:
+			return false
+		}
+		i += 2
+		if utf16.IsSurrogate(r) {
+			r2 := rune(-1)
+			if i+1 < len(body) && body[i] == '\\' && body[i+1] == 'u' {
+				r2 = openAIResponsesJSONHex4(body, i+2)
+			}
+			if d := utf16.DecodeRune(r, r2); d != utf8.RuneError {
+				r = d
+				i += 6
+			} else {
+				r = utf8.RuneError
+			}
+		}
+		var buf [utf8.UTFMax]byte
+		n := utf8.EncodeRune(buf[:], r)
+		if j+n > len(want) || want[j:j+n] != string(buf[:n]) {
+			return false
+		}
+		j += n
+	}
+	return j == len(want)
 }
 
+// openAIResponsesJSONHex4: the value of the four hex digits at b[i:], or -1.
+func openAIResponsesJSONHex4(b []byte, i int) rune {
+	if i+4 > len(b) {
+		return -1
+	}
+	var r rune
+	for _, c := range b[i : i+4] {
+		switch {
+		case c >= '0' && c <= '9':
+			r = r<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			r = r<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			r = r<<4 | rune(c-'A'+10)
+		default:
+			return -1
+		}
+	}
+	return r
+}
+
+// openAIResponsesJSONStringMatchesAny: openAIResponsesJSONStringEquals for
+// each candidate; no decode, no allocation, each test bounded by its
+// candidate's length.
 func openAIResponsesJSONStringMatchesAny(raw []byte, candidates ...string) bool {
 	for _, candidate := range candidates {
 		if openAIResponsesJSONStringEquals(raw, candidate) {

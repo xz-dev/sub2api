@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -790,4 +791,42 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_PreservesInstanceData(t *test
 	require.True(t, gjson.GetBytes(sanitized, base+".examples.0.required").Exists())
 	require.True(t, gjson.GetBytes(sanitized, base+".const.required").Exists())
 	require.True(t, gjson.GetBytes(sanitized, base+".enum.0.required").Exists())
+}
+
+// TestOpenAIResponsesJSONStringEqualsMatchesDecode: the in-place escape
+// compare agrees with encoding/json's decode of the literal.
+func TestOpenAIResponsesJSONStringEqualsMatchesDecode(t *testing.T) {
+	literals := []string{
+		`"type"`, `"typ\u0065"`, `"\u0074\u0079\u0070\u0065"`, `"ty\/pe"`, `"\/"`, `"a\nb"`, `"a\"b"`,
+		`"a\\b"`, `"\b\f\r\t"`, `"\u00e9"`, `"é"`, `"\ud83d\ude00"`, `"😀"`, `"\ud83d"`, `"\ude00x"`,
+		`"\ud83dx"`, `"\ud83d\u0041"`, `"\uFFFD"`, `""`, `"\u0000"`, `"parameters"`, `"input_schema"`,
+	}
+	wants := []string{"type", "ty/pe", "/", "a\nb", "a\"b", "a\\b", "\b\f\r\t", "é", "😀", "\uFFFD", "\uFFFDx",
+		"\uFFFDA", "", "\x00", "parameters", "input_schema", "typ", "types"}
+	for _, lit := range literals {
+		var decoded string
+		require.NoError(t, json.Unmarshal([]byte(lit), &decoded), lit)
+		for _, want := range wants {
+			require.Equal(t, decoded == want, openAIResponsesJSONStringEquals([]byte(lit), want), "%s vs %q", lit, want)
+		}
+	}
+	for _, bad := range []string{`"a\x"`, `"\u12"`, `"\u12G4"`, `"abc`, `abc"`, `"`} {
+		require.False(t, openAIResponsesJSONStringEquals([]byte(bad), "a"), bad)
+	}
+}
+
+// TestOpenAIResponsesJSONStringEqualsOwnAllocations: a body-sized member
+// name with one escape (review rr10, adv_rv1_key_tool_big) is rejected by
+// length and compared in place; neither Equals nor MatchesAny allocates.
+func TestOpenAIResponsesJSONStringEqualsOwnAllocations(t *testing.T) {
+	big := []byte(`"\n` + strings.Repeat("a", 1<<20) + `"`)
+	short := []byte(`"\u0070arameter\u0073"`)
+	allocs := testing.AllocsPerRun(100, func() {
+		if openAIResponsesJSONStringEquals(big, "parameters") ||
+			openAIResponsesJSONStringMatchesAny(big, "anyOf", "oneOf", "allOf", "prefixItems") ||
+			!openAIResponsesJSONStringMatchesAny(short, "items", "parameters") {
+			panic("unexpected match result")
+		}
+	})
+	require.Zero(t, allocs)
 }
