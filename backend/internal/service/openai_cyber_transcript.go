@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 )
@@ -103,7 +104,7 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 		_, _ = h.Write([]byte("|"))
 		_, _ = h.Write([]byte(field))
 		_, _ = h.Write([]byte("="))
-		_, _ = h.Write([]byte(canonical))
+		_, _ = h.Write(cyberTranscriptBytesView(canonical))
 	}
 
 	prefixKey := func() string { return hex.EncodeToString(h.Sum(nil)) }
@@ -121,7 +122,7 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 			return true
 		}
 		_, _ = h.Write([]byte("|item="))
-		_, _ = h.Write([]byte(canonical))
+		_, _ = h.Write(cyberTranscriptBytesView(canonical))
 		length++
 		return visit(item, length, prefixKey)
 	}
@@ -144,10 +145,10 @@ func walkOpenAICyberTranscript(apiKeyID int64, body []byte, visit func(item gjso
 
 func openAICyberTranscriptItemStartsUserTurn(item gjson.Result) bool {
 	if strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "user") {
-		content := item.Get("content")
+		content := firstRawJSONMember(item, "content") // never unescaped (rr9)
 		if content.IsArray() {
 			hasUserContent := false
-			content.ForEach(func(_, block gjson.Result) bool {
+			forEachRawJSONMember(content, func(_, block gjson.Result) bool {
 				switch strings.ToLower(strings.TrimSpace(block.Get("type").String())) {
 				case "tool_result", "function_call_output", "custom_tool_call_output", "computer_call_output":
 				default:
@@ -173,6 +174,13 @@ func openAICyberTranscriptItemIsModelGenerated(item gjson.Result) bool {
 	default:
 		return false
 	}
+}
+
+// cyberTranscriptBytesView is a read-only view of s for the hash, which
+// only reads it: an item can be as large as the body (rr9: []byte(s)
+// copied it).
+func cyberTranscriptBytesView(s string) []byte {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 // cyberTranscriptCanonical is an item (or instructions) in the transcript
