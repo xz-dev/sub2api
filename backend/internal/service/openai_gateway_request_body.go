@@ -795,34 +795,32 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 	}
 
 	// Only reasoning metadata needs decoding. Keep large image/tool results as
-	// slices of the original JSON and copy them once into the final request.
-	items := make([]string, 0)
+	// slices of the original JSON and copy them once into the final request:
+	// one output buffer, no list of the items (rr6 follow-up: the list cost
+	// about 1 x a body of many small items).
 	changed := false
-	var itemErr error
-	input.ForEach(func(_, item gjson.Result) bool {
+	edit := func(item gjson.Result) (string, bool, error) {
 		if !item.IsObject() {
-			items = append(items, item.Raw)
-			return true
+			return item.Raw, true, nil
 		}
 		if hasDuplicateJSONObjectKeysIn(item, &keys) {
+			// Off the verified-raw list (an item with a duplicate member
+			// name), so the request is charged k_conv before it gets here.
 			var decoded map[string]any
 			if err := decodeOpenAIJSONUseNumber([]byte(item.Raw), &decoded); err != nil {
-				itemErr = err
-				return false
+				return "", false, err
 			}
 			keep, itemChanged := applyStoreFalseReplayItemRules(decoded)
 			changed = changed || itemChanged
 			if !keep {
-				return true
+				return "", false, nil
 			}
 			// Kept with the last member of each name, as a decoded rewrite.
 			encoded, err := marshalOpenAIUpstreamJSON(decoded)
 			if err != nil {
-				itemErr = err
-				return false
+				return "", false, err
 			}
-			items = append(items, string(encoded))
-			return true
+			return string(encoded), true, nil
 		}
 		typ := strings.TrimSpace(item.Get("type").String())
 		id := strings.TrimSpace(item.Get("id").String())
@@ -830,61 +828,68 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 		if (typ == "reasoning" && (encrypted.Type != gjson.String || strings.TrimSpace(encrypted.Str) == "")) ||
 			(typ == "item_reference" && strings.HasPrefix(id, "rs_")) {
 			changed = true
-			return true
+			return "", false, nil
 		}
 		stripID := typ == "reasoning" && strings.HasPrefix(id, "rs_")
 		addSummary := typ == "reasoning" && item.Get("summary").Type == gjson.Null
 		stripCallID := shouldStripOpenAIResponsesNonPairCallID(typ) && item.Get("call_id").Exists()
 		if !stripID && !addSummary && !stripCallID {
-			items = append(items, item.Raw)
-			return true
+			return item.Raw, true, nil
 		}
-		var decoded map[string]any
-		if err := decodeOpenAIJSONUseNumber([]byte(item.Raw), &decoded); err != nil {
-			itemErr = err
-			return false
-		}
-		if stripID {
-			delete(decoded, "id")
-		}
-		if addSummary {
-			decoded["summary"] = []any{}
-		}
-		if stripCallID {
-			delete(decoded, "call_id")
-		}
-		encoded, err := marshalOpenAIUpstreamJSON(decoded)
+		edited, err := editStoreFalseReplayItemRaw(item.Raw, stripID, addSummary, stripCallID)
 		if err != nil {
-			itemErr = err
-			return false
+			return "", false, err
 		}
-		items = append(items, string(encoded))
 		changed = true
-		return true
-	})
-	if itemErr != nil {
-		return body, false, fmt.Errorf("normalize API-key store=false reasoning replay: %w", itemErr)
+		return edited, true, nil
+	}
+	var out []byte
+	var err error
+	if !rootDuplicate {
+		out, err = rebuildOpenAIRawInput(body, input, edit)
+	} else {
+		var arr []byte
+		if arr, err = appendRawInputItems(nil, input, edit); err == nil {
+			out = rewriteRawObjectMember(body, root, input, true, len(arr), func(dst []byte) []byte {
+				return append(dst, arr...)
+			})
+		}
+	}
+	if err != nil {
+		return body, false, fmt.Errorf("normalize API-key store=false reasoning replay: %w", err)
 	}
 	if !changed {
 		return body, false, nil
 	}
-	if !rootDuplicate {
-		return replaceOpenAIRawInput(body, input, items), true, nil
-	}
-	size := len(items) + 1
-	for _, item := range items {
-		size += len(item)
-	}
-	return rewriteRawObjectMember(body, root, input, true, size, func(dst []byte) []byte {
-		dst = append(dst, '[')
-		for index, item := range items {
-			if index > 0 {
-				dst = append(dst, ',')
-			}
-			dst = append(dst, item...)
+	return out, true, nil
+}
+
+// editStoreFalseReplayItemRaw applies the store=false replay edits to one
+// input item on its raw JSON (the item has no duplicate member names):
+// drop id, set summary to [], drop call_id. It used to decode the item
+// into a map and re-encode it, about 20 x an item of many small parts
+// (rr6 follow-up: a reasoning item with a large summary, or a message with
+// call_id and many parts, on the verified-raw path at k_skel). Same JSON
+// value as the decoded form (TestEditStoreFalseReplayItemRawMatchesDecoded);
+// member order and escapes are kept as the client sent them.
+func editStoreFalseReplayItemRaw(raw string, stripID, addSummary, stripCallID bool) (string, error) {
+	var err error
+	if stripID {
+		if raw, err = sjson.Delete(raw, "id"); err != nil {
+			return "", err
 		}
-		return append(dst, ']')
-	}), true, nil
+	}
+	if addSummary {
+		if raw, err = sjson.SetRaw(raw, "summary", "[]"); err != nil {
+			return "", err
+		}
+	}
+	if stripCallID {
+		if raw, err = sjson.Delete(raw, "call_id"); err != nil {
+			return "", err
+		}
+	}
+	return raw, nil
 }
 
 // storeFalseReplayMayChange reports whether the item walk of

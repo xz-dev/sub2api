@@ -4,6 +4,7 @@ package handler
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"io"
 	"net/http"
 	"strings"
@@ -24,6 +25,7 @@ type coverUpstream struct {
 	rejectEncrypted atomic.Int32
 	// failAuth (rr6): a request whose Authorization holds it gets a 502.
 	failAuth string
+	lastSum  atomic.Value // string: sha256 of the last forwarded body
 }
 
 // streamScan discards what it is given and notes whether `"stream":true`
@@ -47,8 +49,10 @@ func (u *coverUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.R
 	u.calls.Add(1)
 	scan := &streamScan{}
 	if req.Body != nil {
-		n, _ := io.Copy(scan, req.Body)
+		sum := sha256.New()
+		n, _ := io.Copy(io.MultiWriter(scan, sum), req.Body)
 		u.forwarded.Add(n)
+		u.lastSum.Store(string(sum.Sum(nil)))
 	}
 	path := req.URL.Path
 	u.lastPath.Store(path)

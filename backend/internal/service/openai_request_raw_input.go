@@ -25,6 +25,45 @@ func replaceOpenAIRawInput(body []byte, input gjson.Result, items []string) []by
 	return append(result, body[input.Index+len(input.Raw):]...)
 }
 
+// appendRawInputItems appends input's items to dst as a JSON array, each
+// item as fn gives it (keep false drops it), without a list of the items.
+func appendRawInputItems(dst []byte, input gjson.Result, fn func(item gjson.Result) (string, bool, error)) ([]byte, error) {
+	dst = append(dst, '[')
+	first := true
+	var err error
+	input.ForEach(func(_, item gjson.Result) bool {
+		out, keep, itemErr := fn(item)
+		if itemErr != nil {
+			err = itemErr
+			return false
+		}
+		if keep {
+			if !first {
+				dst = append(dst, ',')
+			}
+			first = false
+			dst = append(dst, out...)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append(dst, ']'), nil
+}
+
+// rebuildOpenAIRawInput is body with its input array rebuilt by fn
+// (appendRawInputItems) in one buffer the size of body.
+func rebuildOpenAIRawInput(body []byte, input gjson.Result, fn func(item gjson.Result) (string, bool, error)) ([]byte, error) {
+	result := make([]byte, 0, len(body)+4<<10)
+	result = append(result, body[:input.Index]...)
+	result, err := appendRawInputItems(result, input, fn)
+	if err != nil {
+		return nil, err
+	}
+	return append(result, body[input.Index+len(input.Raw):]...), nil
+}
+
 // The standard decoder keeps the last duplicate key; GJSON selects the first.
 // hasDuplicateJSONObjectKeysIn is hasDuplicateJSONObjectKeys with the keys
 // kept in *scratch, reused across calls: no map for an object of up to 32

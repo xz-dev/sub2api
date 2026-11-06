@@ -43,7 +43,7 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 		if !v.Exists() || (v.Type == gjson.String && strings.TrimSpace(v.String()) == "") {
 			continue
 		}
-		canonical := normalizeCompatSeedJSON(json.RawMessage(v.Raw))
+		canonical := cyberTranscriptCanonical(v.Raw)
 		if v.Type == gjson.String {
 			canonical = v.String()
 		}
@@ -74,7 +74,7 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 				encoded, _ := json.Marshal(item.String())
 				canonical = string(encoded)
 			case gjson.JSON:
-				canonical = normalizeCompatSeedJSON(json.RawMessage(item.Raw))
+				canonical = cyberTranscriptCanonical(item.Raw)
 			}
 			if strings.TrimSpace(canonical) == "" {
 				return true
@@ -154,4 +154,18 @@ func openAICyberTranscriptItemIsModelGenerated(item gjson.Result) bool {
 	default:
 		return false
 	}
+}
+
+// cyberTranscriptCanonical is an item (or instructions) in the transcript
+// hash: canonical JSON when it has at most contentSeedDecodeMaxValues
+// values, else the raw bytes. A decode costs about 150 bytes per value
+// and runs on every request while the session block is on (rr6 follow-up:
+// one input item of many small parts on the verified-raw path). Block keys
+// are written and looked up with the same form; a large item blocked
+// before the upgrade is keyed again on its next block.
+func cyberTranscriptCanonical(raw string) string {
+	if rawJSONValuesAbove(raw, contentSeedDecodeMaxValues) {
+		return raw
+	}
+	return normalizeCompatSeedJSON(json.RawMessage(raw))
 }

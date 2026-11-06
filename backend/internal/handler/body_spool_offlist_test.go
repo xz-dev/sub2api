@@ -26,9 +26,9 @@ func TestBodySpoolOffListDecisionIsLogged(t *testing.T) {
 	cases := []struct {
 		name, path, body, class, stage, reason string
 	}{
-		{"covered, tool off the list", "/v1/responses", `{"model":"gpt-5.5","input":"hi","tools":[{"type":"web_search","filters":{"allowed_domains":["secret.example"]}}]}`, "responses", "request", "root member tools: tool type web_search"},
-		{"covered, item off the list", "/openai/v1/responses", `{"model":"gpt-5.5","input":[{"type":"item_reference","id":"secret_id"}]}`, "responses", "request", "root member input: item type item_reference"},
-		{"covered, root member off the list", "/v1/responses", `{"model":"gpt-5.5","input":"hi","conversation":"secret_conv"}`, "responses", "request", "root member conversation"},
+		{"covered, tool off the list", "/v1/responses", `{"model":"gpt-5.5","input":"hi","tools":[{"type":"image_generation","partial_images":"secret"}]}`, "responses", "request", "root member tools: tool type image_generation"},
+		{"covered, item off the list", "/openai/v1/responses", `{"model":"gpt-5.5","input":[{"type":"compaction_trigger","id":"secret_id"}]}`, "responses", "request", "root member input: item type compaction_trigger"},
+		{"covered, root member off the list", "/v1/responses", `{"model":"gpt-5.5","input":"hi","prompt":{"id":"secret_prompt"}}`, "responses", "request", "root member prompt"},
 		{"compact, off the list", "/v1/responses/compact", `{"model":"gpt-5.5","input":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"secret"}]}]}`, "responses_compact", "request", "root member input: reasoning content"},
 		{"covered, on the list", "/v1/responses", `{"model":"gpt-5.5","input":"hi","tools":[{"type":"function","name":"f"}]}`, "responses", "account", "account Type"},
 		{"chat route", "/v1/chat/completions", `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]}`, "", "", ""},

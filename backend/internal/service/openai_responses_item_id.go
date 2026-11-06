@@ -99,34 +99,31 @@ func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
 	if !hasSanitization {
 		return body, false, nil
 	}
-	items := make([]inputItem, 0)
-	input.ForEach(func(_, item gjson.Result) bool {
-		items = append(items, parse(item))
-		return true
-	})
-
-	rebuiltItems := make([]string, 0, len(items))
-	for index, item := range items {
+	// One output buffer, no list of the items (rr6 follow-up: the two lists
+	// cost about 3 x a body of many small items on the verified-raw path).
+	index := -1
+	out, err := rebuildOpenAIRawInput(body, input, func(raw gjson.Result) (string, bool, error) {
+		index++
+		item := parse(raw)
 		if !item.stripID && !item.stripCallID {
-			rebuiltItems = append(rebuiltItems, item.raw)
-			continue
+			return item.raw, true, nil
 		}
-		itemBody := []byte(item.raw)
+		edited := item.raw
+		var err error
 		if item.stripID {
-			var err error
-			itemBody, err = sjson.DeleteBytes(itemBody, "id")
-			if err != nil {
-				return nil, false, fmt.Errorf("delete input.%d.id: %w", index, err)
+			if edited, err = sjson.Delete(edited, "id"); err != nil {
+				return "", false, fmt.Errorf("delete input.%d.id: %w", index, err)
 			}
 		}
 		if item.stripCallID {
-			var err error
-			itemBody, err = sjson.DeleteBytes(itemBody, "call_id")
-			if err != nil {
-				return nil, false, fmt.Errorf("delete input.%d.call_id: %w", index, err)
+			if edited, err = sjson.Delete(edited, "call_id"); err != nil {
+				return "", false, fmt.Errorf("delete input.%d.call_id: %w", index, err)
 			}
 		}
-		rebuiltItems = append(rebuiltItems, string(itemBody))
+		return edited, true, nil
+	})
+	if err != nil {
+		return nil, false, err
 	}
-	return replaceOpenAIRawInput(body, input, rebuiltItems), true, nil
+	return out, true, nil
 }

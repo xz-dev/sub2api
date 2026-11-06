@@ -103,12 +103,12 @@ scanRoot:
 
 	if tools := fields[toolsField]; tools.Exists() && tools.IsArray() && tools.Raw != "[]" {
 		_, _ = b.WriteString("|tools=")
-		_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(tools.Raw)))
+		writeContentSeedJSON(&b, tools.Raw)
 	}
 
 	if funcs := fields[functionsField]; funcs.Exists() && funcs.IsArray() && funcs.Raw != "[]" {
 		_, _ = b.WriteString("|functions=")
-		_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(funcs.Raw)))
+		writeContentSeedJSON(&b, funcs.Raw)
 	}
 
 	if instr := fields[instructionsField].String(); instr != "" {
@@ -128,7 +128,7 @@ scanRoot:
 				if systemPrefixOpen {
 					_, _ = b.WriteString("|system=")
 					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
+						writeContentSeedJSON(&b, c.Raw)
 					}
 				}
 			case "user":
@@ -136,7 +136,7 @@ scanRoot:
 				if !firstUserCaptured {
 					_, _ = b.WriteString("|first_user=")
 					if c := msg.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
+						writeContentSeedJSON(&b, c.Raw)
 					}
 					firstUserCaptured = true
 				}
@@ -156,13 +156,13 @@ scanRoot:
 				case "system", "developer":
 					_, _ = b.WriteString("|system=")
 					if c := item.Get("content"); c.Exists() {
-						_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
+						writeContentSeedJSON(&b, c.Raw)
 					}
 				case "user":
 					if !firstUserCaptured {
 						_, _ = b.WriteString("|first_user=")
 						if c := item.Get("content"); c.Exists() {
-							_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(c.Raw)))
+							writeContentSeedJSON(&b, c.Raw)
 						}
 						firstUserCaptured = true
 					}
@@ -183,6 +183,55 @@ scanRoot:
 		return ""
 	}
 	return b.String()
+}
+
+// contentSeedDecodeMaxValues: the most JSON values a content-seed field
+// may have to be decoded into its canonical form. A decode costs about
+// 150 bytes per value (rr6 follow-up: a 16 MiB tools array, or a developer
+// message of tiny parts, cost k 22 on the verified-raw path, charged k_skel
+// 6); 4096 values keep it under about 600 KiB.
+const contentSeedDecodeMaxValues = 4096
+
+// writeContentSeedJSON writes one field of the content session seed:
+// canonical JSON (decoded and re-encoded, keys sorted) when it has at most
+// contentSeedDecodeMaxValues values, else "raw:" and the field as sent,
+// which allocates nothing beyond the copy. The value count is the same on
+// the skeleton and on the whole body (a spooled string is one marker
+// string), and a raw field's markers are expanded when the seed is hashed
+// (deriveOpenAISessionHashesForRequest), so both give the same hash. A
+// field above the bound gets a seed part that differs from the old
+// canonical one (one sticky-session miss after the upgrade) and that is
+// stable while the client resends the same bytes.
+func writeContentSeedJSON(b *strings.Builder, raw string) {
+	if rawJSONValuesAbove(raw, contentSeedDecodeMaxValues) {
+		_, _ = b.WriteString("raw:")
+		_, _ = b.WriteString(raw)
+		return
+	}
+	_, _ = b.WriteString(normalizeCompatSeedJSON(rawJSONView(raw)))
+}
+
+// rawJSONValuesAbove reports whether the JSON text raw has more than max
+// values (counted as the '{', '[' and ',' outside strings, plus one).
+func rawJSONValuesAbove(raw string, max int) bool {
+	n, inString, escaped := 1, false, false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		switch {
+		case escaped:
+			escaped = false
+		case inString:
+			escaped = ch == '\\'
+			inString = ch != '"'
+		case ch == '"':
+			inString = true
+		case ch == '{' || ch == '[' || ch == ',':
+			if n++; n > max {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // deriveOpenAIAnchoredContentSessionSeed returns the legacy content-derived
