@@ -2511,6 +2511,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		c.Request = c.Request.WithContext(ctx)
 	}
 
+	// Client messages are charged on the body-spool meter as they are read,
+	// and refused above L with a named error event and close 1000.
+	readBudget, err := newOpenAIWSReadBudget(h.cfg)
+	if err != nil {
+		writeCapacityRefusal(c, &capacityRefusal{http.StatusInternalServerError, "body_spool_misconfigured", bodySpoolHop + ": " + err.Error(), 0})
+		return
+	}
+
 	wsConn, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{
 		CompressionMode: coderws.CompressionContextTakeover,
 	})
@@ -2529,7 +2537,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	defer func() {
 		_ = wsConn.CloseNow()
 	}()
-	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
+	if readBudget != nil {
+		defer readBudget.End() // the last message's charge
+		// Above our own limit, so our code, not the library, answers an
+		// oversized message.
+		wsConn.SetReadLimit(readBudget.Limit() + 1)
+		ctx = service.WithOpenAIWSClientReadBudget(ctx, readBudget)
+		c.Request = c.Request.WithContext(ctx)
+	} else {
+		wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
+	}
 
 	firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
 	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
@@ -2540,6 +2557,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		"missing first response.create message",
 	)
 	if err != nil {
+		if service.IsOpenAIWSClientReadRefusal(err) {
+			// The named error event and close 1000 are sent.
+			reqLog.Warn("openai.websocket_first_message_refused", zap.Error(err))
+			return
+		}
 		if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
 			reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message", zap.Error(err))
 			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
