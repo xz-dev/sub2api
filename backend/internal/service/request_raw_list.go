@@ -127,13 +127,13 @@ func VerifiedRawResponsesRequest(body []byte, header http.Header) (ok bool, reas
 		check, listed := rawRootMembers[key]
 		switch {
 		case !listed:
-			reason = "root member " + strings.Trim(key, `"`)
+			reason = "root member " + rawReasonName(key)
 		case n == len(seen):
 			reason = "too many root members"
 		default:
 			for _, k := range seen[:n] {
 				if k == key {
-					reason = "duplicate root member " + key
+					reason = "duplicate root member " + rawReasonName(key)
 				}
 			}
 			seen[n] = key
@@ -351,8 +351,13 @@ func rawItem(item string) string {
 		name, ok = "message", hasRole
 	}
 	check, listed := rawItemTypes[name]
-	if !ok || !listed {
-		return "item type " + typ
+	switch {
+	case !hasType && !hasRole:
+		return "item without type or role"
+	case !ok:
+		return "item type not a plain string"
+	case !listed:
+		return "item type " + rawReasonName(name)
 	}
 	return check(item)
 }
@@ -405,8 +410,11 @@ func rawContentPart(part string) string {
 		return "content part is not an object"
 	}
 	typ, ok := rawStr(rawMember(part, "type"))
-	if !ok || !rawContentPartTypes[typ] {
-		return "content part type " + typ
+	if !ok {
+		return "content part type not a plain string"
+	}
+	if !rawContentPartTypes[typ] {
+		return "content part type " + rawReasonName(typ)
 	}
 	if typ == "input_image" {
 		// An empty base64 image is sanitized by a whole-body decode. Such
@@ -435,8 +443,11 @@ func rawTools(v string) (reason string) {
 		if rawFirst(tool) == '{' {
 			typ, ok = rawStr(rawMember(tool, "type"))
 		}
-		if !ok || !rawToolTypes[typ] {
-			reason = "tool type " + typ
+		switch {
+		case !ok:
+			reason = "tool type not a plain string"
+		case !rawToolTypes[typ]:
+			reason = "tool type " + rawReasonName(typ)
 		}
 		return reason == ""
 	})
@@ -556,12 +567,14 @@ func IsVerifiedRawAccount(account *Account, transport OpenAIUpstreamTransport) (
 // ChargeRequestUnlessVerifiedRaw is the account half of the fail-safe
 // charge, called before each forward attempt and before the attempt's body
 // is derived: unless the account is verified raw for this request, it takes
-// the k_conv top-up (once per request; a refusal is written and final).
+// the k_conv top-up (once per request; a refusal is written and final),
+// recorded as an off-list decision (ChargeRequestOffList).
 func (s *OpenAIGatewayService) ChargeRequestUnlessVerifiedRaw(c *gin.Context, account *Account) error {
 	decision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	decision = resolveOpenAIWSDecisionByClientTransport(decision, GetOpenAIClientTransport(c))
-	if ok, _ := IsVerifiedRawAccount(account, decision.Transport); ok {
+	ok, reason := IsVerifiedRawAccount(account, decision.Transport)
+	if ok {
 		return nil
 	}
-	return ChargeRequestConversion(c)
+	return ChargeRequestOffList(c, "account", reason)
 }
