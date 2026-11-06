@@ -199,21 +199,84 @@ func TestRawJSONMemberSitesParity(t *testing.T) {
 }
 
 // TestRawJSONMemberSitesDoNotCopyLargeStrings (rr9): one input item holding
-// a 4 MiB escaped string costs the switched sites (almost) nothing.
+// a 4 MiB escaped string costs the switched sites (almost) nothing. Only
+// the sites' own allocations are counted: every allocation is profiled
+// (MemProfileRate 1) and only the records whose stack holds
+// rawJSONMemberSitesUnderTest are summed, so other goroutines of the test
+// binary do not count.
 func TestRawJSONMemberSitesDoNotCopyLargeStrings(t *testing.T) {
 	text := strings.Repeat(`line \"quoted\" caf\u00e9 text\n`, 4<<20/30)
 	body := []byte(`{"model":"m","instructions":"` + text + `","input":[{"role":"user","content":"` + text + `"}]}`)
 	input := parseRawJSONView(body).Get("input")
 	item := input.Get("0")
 	scratch := make([]string, 0, 32)
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	require.False(t, mayHaveCompactionTrigger(body))
-	require.False(t, hasDuplicateJSONObjectKeysIn(item, &scratch))
-	require.False(t, hasDuplicateJSONObjectKeysIn(parseRawJSONView(body), &scratch))
-	require.False(t, openAIRequestBodyMayContainEmptyBase64InputImage(body))
-	require.False(t, storeFalseReplayMayChange(input))
-	runtime.ReadMemStats(&after)
-	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(64<<10))
+
+	rate := runtime.MemProfileRate
+	runtime.MemProfileRate = 1
+	results := rawJSONMemberSitesUnderTest(body, input, item, &scratch)
+	copied := rawJSONMemberSitesUnderTestCopy(body) // control: must be seen
+	runtime.MemProfileRate = rate
+	for i, r := range results {
+		require.False(t, r, "site %d", i)
+	}
+	own := profiledAllocBytes(t, "service.rawJSONMemberSitesUnderTest", "service.rawJSONMemberSitesUnderTestCopy")
+	t.Logf("own allocations: sites %d B, control %d B", own[0], own[1])
+	require.GreaterOrEqual(t, own[1], int64(len(copied)), "the profile sees the control copy")
+	require.Less(t, own[0], int64(64<<10))
+}
+
+// profiledAllocBytes sums the allocated bytes of the memory-profile
+// records whose stack holds a function named by each marker (suffix).
+func profiledAllocBytes(t *testing.T, markers ...string) []int64 {
+	t.Helper()
+	for i := 0; i < 3; i++ { // the profile is published up to two GC cycles late
+		runtime.GC()
+	}
+	n, _ := runtime.MemProfile(nil, true)
+	var records []runtime.MemProfileRecord
+	for {
+		records = make([]runtime.MemProfileRecord, n+64)
+		var ok bool
+		if n, ok = runtime.MemProfile(records, true); ok {
+			records = records[:n]
+			break
+		}
+	}
+	sums := make([]int64, len(markers))
+	for _, r := range records {
+		frames := runtime.CallersFrames(r.Stack())
+	frameLoop:
+		for {
+			f, more := frames.Next()
+			for i, m := range markers {
+				if strings.HasSuffix(f.Function, m) {
+					sums[i] += r.AllocBytes
+					break frameLoop
+				}
+			}
+			if !more {
+				break
+			}
+		}
+	}
+	return sums
+}
+
+// rawJSONMemberSitesUnderTest runs the switched sites; its frame marks
+// their allocations in the memory profile.
+//
+//go:noinline
+func rawJSONMemberSitesUnderTest(body []byte, input, item gjson.Result, scratch *[]string) [5]bool {
+	return [5]bool{
+		mayHaveCompactionTrigger(body),
+		hasDuplicateJSONObjectKeysIn(item, scratch),
+		hasDuplicateJSONObjectKeysIn(parseRawJSONView(body), scratch),
+		openAIRequestBodyMayContainEmptyBase64InputImage(body),
+		storeFalseReplayMayChange(input),
+	}
+}
+
+//go:noinline
+func rawJSONMemberSitesUnderTestCopy(body []byte) []byte {
+	return append([]byte(nil), body...)
 }
