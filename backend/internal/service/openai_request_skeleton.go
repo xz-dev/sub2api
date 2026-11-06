@@ -7,6 +7,11 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// openAIRequestSkeletonDecodeMaxBytes: the largest skeleton decoded
+// without the k_conv top-up (rewriteOpenAIRequestSkeleton). Measured: 64
+// KiB of escaped instructions costs 842 KB with the new body.
+const openAIRequestSkeletonDecodeMaxBytes = 64 << 10
+
 // rewriteOpenAIRequestSkeleton runs fn on the root object of a Responses
 // body without decoding its input items (review rr4: a full decode costs
 // about 20-30 x a body of many small items). fn sees every root member;
@@ -19,10 +24,14 @@ import (
 // a duplicate root name; the caller then decodes all of it.
 //
 // chargeConversion is taken before the decode when the skeleton has more
-// than contentSeedDecodeMaxValues JSON values (rr6 follow-up: a large tools
+// than openAIRequestSkeletonDecodeMaxBytes bytes (rr9: one large string,
+// for example instructions, is copied by the decode and again by the
+// re-encode; about 13 x for escaped text) or more than
+// contentSeedDecodeMaxValues JSON values (rr6 follow-up: a large tools
 // array or additional_tools item of many small parts cost about 20 x its
-// bytes on the verified-raw path, charged k_skel); a smaller skeleton
-// costs at most about 600 KiB.
+// bytes on the verified-raw path, charged k_skel); the byte test comes
+// first, before the skeleton is built. A smaller skeleton costs at most
+// about 1 MiB.
 func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, chargeConversion func() error) (out []byte, changed, ok bool, err error) {
 	root := parseRawJSONView(body)
 	if !root.IsObject() || !gjson.ValidBytes(body) {
@@ -33,7 +42,35 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 		return body, false, false, nil
 	}
 	input := root.Get("input")
-	skeleton := make([]byte, 0, 1024)
+	keptItem := func(item gjson.Result) bool {
+		return strings.TrimSpace(lastRawObjectMember(item, "type").String()) == "additional_tools"
+	}
+	// An upper bound of the skeleton's size (one comma too many per
+	// container), without building it.
+	size := 2
+	root.ForEach(func(name, value gjson.Result) bool {
+		size += len(name.Raw) + 2 // ':' and ','
+		if name.Str != "input" || !input.IsArray() {
+			size += len(value.Raw)
+			return true
+		}
+		size += 2
+		input.ForEach(func(_, item gjson.Result) bool {
+			if keptItem(item) {
+				size += len(item.Raw) + 1
+			}
+			return true
+		})
+		return true
+	})
+	charged := false
+	if size > openAIRequestSkeletonDecodeMaxBytes {
+		if err := chargeConversion(); err != nil {
+			return body, false, true, err
+		}
+		charged = true
+	}
+	skeleton := make([]byte, 0, size)
 	skeleton = append(skeleton, '{')
 	root.ForEach(func(name, value gjson.Result) bool {
 		if len(skeleton) > 1 {
@@ -48,7 +85,7 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 		skeleton = append(skeleton, '[')
 		first := true
 		input.ForEach(func(_, item gjson.Result) bool {
-			if strings.TrimSpace(lastRawObjectMember(item, "type").String()) != "additional_tools" {
+			if !keptItem(item) {
 				return true
 			}
 			if !first {
@@ -62,7 +99,7 @@ func rewriteOpenAIRequestSkeleton(body []byte, fn func(map[string]any) bool, cha
 		return true
 	})
 	skeleton = append(skeleton, '}')
-	if rawJSONValuesAbove(unsafe.String(unsafe.SliceData(skeleton), len(skeleton)), contentSeedDecodeMaxValues) {
+	if !charged && rawJSONValuesAbove(unsafe.String(unsafe.SliceData(skeleton), len(skeleton)), contentSeedDecodeMaxValues) {
 		if err := chargeConversion(); err != nil {
 			return body, false, true, err
 		}

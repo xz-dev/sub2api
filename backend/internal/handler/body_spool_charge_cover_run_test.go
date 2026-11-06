@@ -26,6 +26,9 @@ type coverUpstream struct {
 	// failAuth (rr6): a request whose Authorization holds it gets a 502.
 	failAuth string
 	lastSum  atomic.Value // string: sha256 of the last forwarded body
+	// blockScopeHits (rr9): requests that found their cyber session-block
+	// scope active and so derived the transcript keys.
+	blockScopeHits atomic.Int32
 }
 
 // streamScan discards what it is given and notes whether `"stream":true`
