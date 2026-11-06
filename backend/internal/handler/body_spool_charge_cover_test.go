@@ -4,6 +4,7 @@ package handler
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,11 +140,21 @@ type coverServer struct {
 // runCoverCase serves body once. The meter must be empty before: the
 // previous request released everything it charged.
 func runCoverCase(t *testing.T, srv coverServer, path string, body []byte, codex bool, header map[string]string) coverResult {
+	return runCoverCaseBody(t, srv, path, body, codex, header, false)
+}
+
+// runCoverCaseBody is runCoverCase; chunked sends the body without a
+// Content-Length, so the ingest charges it as its bytes arrive.
+func runCoverCaseBody(t *testing.T, srv coverServer, path string, body []byte, codex bool, header map[string]string, chunked bool) coverResult {
 	t.Helper()
 	charged := requestChargedBytes(srv.cfg)
 	assert.Zero(t, charged(), "a charge outlived its request")
 	srv.cfg.Gateway.CodexImageGenerationBridgeEnabled = codex
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	if chunked {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = -1
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if codex {
 		req.Header.Set("originator", "codex_cli_rs")
@@ -184,11 +195,12 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 	for _, cb := range append(append([]coverCombo{coverHarnessCombo()}, coverOpenAICombos()...), coverGatewayCombos()...) {
 		prefix := cb.route + "/" + cb.account + "/"
 		type shape struct {
-			name   string
-			body   func(size int) []byte
-			codex  bool
-			header map[string]string
-			prime  string
+			name    string
+			body    func(size int) []byte
+			codex   bool
+			header  map[string]string
+			prime   string
+			chunked bool
 		}
 		var shapes []shape
 		p := coverProtos[cb.proto]
@@ -198,6 +210,9 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 		for _, b := range coverBases {
 			shapes = append(shapes, shape{name: b.name, body: func(n int) []byte { return coverBody(p, b, n, cb.model, "", "") }})
 		}
+		// No Content-Length (exit gate 7.5 finding 2): charged as the bytes
+		// arrive instead of up front.
+		shapes = append(shapes, shape{name: "tiny_chunked", chunked: true, body: func(n int) []byte { return coverBody(p, coverBases[0], n, cb.model, "", "") }})
 		for _, m := range coverMods {
 			if m.proto != cb.proto {
 				continue
@@ -236,7 +251,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 						coverPrimes[sh.prime](t, *srv, cb.path, sh.body(64<<10), sh.header)
 					}
 					body := sh.body(size)
-					r := runCoverCase(t, *srv, cb.path, body, sh.codex, sh.header)
+					r := runCoverCaseBody(t, *srv, cb.path, body, sh.codex, sh.header, sh.chunked)
 					t.Logf("COVER %s status %d calls %d bytes %d peak_heap %d peak_charge %d excess %d samples %d",
 						name, r.status, r.calls, r.bytes, r.PeakHeap, r.PeakCharge, r.Excess, r.Samples)
 					if r.reply != "" {
@@ -271,6 +286,7 @@ func TestBodySpoolChargeCoversAllocation(t *testing.T) {
 			}
 		}
 	}
+	cases += runCoverWSReadCases(t, only)
 	t.Logf("COVER cases %d, refused before the upstream with a non-capacity status %d", cases, len(notExercised))
 	for _, n := range notExercised {
 		t.Logf("COVER not-exercised %s", n)

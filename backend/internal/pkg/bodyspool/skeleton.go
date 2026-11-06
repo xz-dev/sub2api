@@ -349,6 +349,22 @@ func (in *ingest) emit(p ...byte) error {
 	if err := in.reserve(need); err != nil {
 		return err
 	}
+	if need > int64(cap(in.skel)) {
+		// Without a size hint (a chunked body) the skeleton grows here.
+		// append grows a large slice by about 1.25 x, so the buffers it
+		// leaves for the GC added up to about 5 x the skeleton, and with the
+		// live one the heap ran ahead of the k_skel x inline-bytes charge
+		// (exit gate 7.5 chunked property case). Doubling leaves less than
+		// 2 x behind: the grown buffer and the old ones stay under 4 x the
+		// inline bytes charged.
+		grown := max(2*int64(cap(in.skel)), need, 4<<10)
+		if in.opt.InlineLimit > 0 {
+			grown = max(min(grown, in.opt.InlineLimit), need)
+		}
+		skel := make([]byte, len(in.skel), grown)
+		copy(skel, in.skel)
+		in.skel = skel
+	}
 	in.skel = append(in.skel, p...)
 	return nil
 }
