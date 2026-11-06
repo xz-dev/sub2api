@@ -44,6 +44,12 @@ import (
 //     paths with a Content-Length, k_path x N (the whole body is read into
 //     one buffer, so that is its real size). The charge is released when
 //     the handler chain returns.
+//   - A memory 503 carries the request's need as limit_bytes
+//     (bodyspool.InsufficientMemoryError.Need): the whole up-front charge
+//     when it is refused, or, for a body charged as its bytes arrive
+//     (chunked, a small covered body, a Content-Encoding body), the bytes
+//     charged so far plus the refused step. That is a lower bound: the
+//     total of a chunked body is unknown until it ends.
 
 const bodySpoolHop = "sub2api"
 
