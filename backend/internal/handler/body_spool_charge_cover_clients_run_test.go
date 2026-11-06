@@ -44,6 +44,23 @@ var coverClientsRewritten = map[string]string{
 	"stress_item_id_sanitize":     "input-ID sanitizer: message ids without msg prefix dropped",
 }
 
+// TestClientShapesStayOnListWithIdentifierCap (rr10): the real pi and SDK
+// request shapes, with their normal-length ids, keys and modes, stay on
+// the verified-raw list under the 4 KiB identifier cap at every size; only
+// the shapes recorded in coverClientsOffList are off.
+func TestClientShapesStayOnListWithIdentifierCap(t *testing.T) {
+	for _, cl := range coverClients() {
+		for _, size := range []int{64 << 10, 2 << 20} {
+			listed, reason := service.VerifiedRawResponsesRequest(cl.body(size), http.Header{})
+			if why, off := coverClientsOffList[cl.name]; off {
+				assert.False(t, listed, "%s (%s)", cl.name, why)
+				continue
+			}
+			assert.True(t, listed, "%s at %d: %s", cl.name, size, reason)
+		}
+	}
+}
+
 // TestBodySpoolClientShapesRawPath (rr6 follow-up item 6): each client
 // shape at 16 MiB on /v1/responses, API-key force_responses account. A
 // shape on the verified-raw list must get 200 at the k_skel charge with
