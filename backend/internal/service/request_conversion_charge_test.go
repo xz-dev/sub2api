@@ -73,7 +73,9 @@ var chargeExempt = map[string]string{
 // or a call of a func() error parameter or of a local holding
 // RequestConversionCharger(c). "On every path" is block dominance: the
 // charge's block encloses the converter at a later statement, so a charge
-// in another branch or a dead branch does not count. A function with a
+// in another branch or a dead branch does not count, nor does a charge on
+// the right of && or || (if cond && ChargeRequestConversion(c) != nil: it
+// may not run). A function with a
 // *gin.Context that misses it fails by name; one without passes the duty
 // to its callers (by name, self-calls ignored).
 //
