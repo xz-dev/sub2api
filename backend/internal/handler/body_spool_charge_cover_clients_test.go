@@ -181,6 +181,17 @@ func coverStressClients() []coverClient {
 		{name: "stress_item_id_sanitize", big: func(n int) (string, string) {
 			return piRoot, coverRepeat(n, ``, `{"type":"message","role":"user","id":"bad","content":"a"}`, ``)
 		}},
+		// json_schema runs the root-member skeleton rewrite, which decodes
+		// tools and additional_tools items: above 4096 values it takes the
+		// k_conv top-up first (rewriteOpenAIRequestSkeleton).
+		{name: "stress_tools_json_schema", big: func(n int) (string, string) {
+			return piRoot + `"text":{"format":{"type":"json_schema","name":"r","schema":{"type":"object","properties":{}}}},` +
+				coverRepeat(n, `"tools":[`, `{"type":"function","name":"f","parameters":{"type":"object"}}`, `],`), `{"role":"user","content":"q"}`
+		}},
+		{name: "stress_additional_tools_json_schema", big: func(n int) (string, string) {
+			return piRoot + `"text":{"format":{"type":"json_schema","name":"r","schema":{"type":"object","properties":{}}}},`,
+				coverRepeat(n, `{"type":"additional_tools","role":"developer","tools":[`, `{"type":"function","name":"f","parameters":{"type":"object"}}`, `]}`)
+		}},
 		{name: "stress_fco_parts", big: func(n int) (string, string) {
 			return piRoot, coverRepeat(n, `{"type":"function_call","call_id":"c","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"c","output":[`, `{"type":"input_text","text":"a"}`, `]}`)
 		}},

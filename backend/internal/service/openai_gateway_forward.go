@@ -371,7 +371,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				requestView = newOpenAIRequestView(body)
 				bodyModified = false
 			}
-			next, changed, ok, err := rewriteOpenAIRequestSkeleton(body, fn)
+			next, changed, ok, err := rewriteOpenAIRequestSkeleton(body, fn, RequestConversionCharger(c))
 			if err != nil {
 				return err
 			}

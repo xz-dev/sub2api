@@ -3,6 +3,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ func TestRewriteOpenAIRequestSkeleton(t *testing.T) {
 		seen = hasOpenAIImageGenerationTool(m)
 		return normalizeOpenAIResponseFormatSchemas(m)
 	}
-	out, changed, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), rewrite)
+	out, changed, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), rewrite, NoConversionCharge)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.True(t, changed)
@@ -33,18 +34,18 @@ func TestRewriteOpenAIRequestSkeleton(t *testing.T) {
 	require.NoError(t, decodeOpenAIJSONUseNumber(out, &got))
 	require.Equal(t, any(full), got)
 
-	same, changed, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(map[string]any) bool { return false })
+	same, changed, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(map[string]any) bool { return false }, NoConversionCharge)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.False(t, changed)
 	require.Equal(t, body, string(same))
 
 	for _, b := range []string{`{"input":[],"input":[]}`, `[1]`, `{"input":`} {
-		_, _, ok, err := rewriteOpenAIRequestSkeleton([]byte(b), rewrite)
+		_, _, ok, err := rewriteOpenAIRequestSkeleton([]byte(b), rewrite, NoConversionCharge)
 		require.NoError(t, err)
 		require.False(t, ok, b)
 	}
-	out, changed, ok, err = rewriteOpenAIRequestSkeleton([]byte(`{"input":"text","text":{"format":{"type":"json_schema","schema":{"minProperties":1}}}}`), rewrite)
+	out, changed, ok, err = rewriteOpenAIRequestSkeleton([]byte(`{"input":"text","text":{"format":{"type":"json_schema","schema":{"minProperties":1}}}}`), rewrite, NoConversionCharge)
 	require.NoError(t, err)
 	require.True(t, ok && changed)
 	require.Contains(t, string(out), `"input":"text"`)
@@ -70,7 +71,7 @@ func TestRewriteOpenAIRequestSkeletonDuplicateItemType(t *testing.T) {
 		_, _, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(m map[string]any) bool {
 			seen = hasOpenAIImageGenerationTool(m)
 			return false
-		})
+		}, NoConversionCharge)
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.Equal(t, tc.seen, seen, tc.item)
@@ -79,4 +80,29 @@ func TestRewriteOpenAIRequestSkeletonDuplicateItemType(t *testing.T) {
 		require.NoError(t, decodeOpenAIJSONUseNumber([]byte(body), &full))
 		require.Equal(t, hasOpenAIImageGenerationTool(full), seen, "same as the decoded body: %s", tc.item)
 	}
+}
+
+// TestRewriteOpenAIRequestSkeletonChargesLargeSkeleton (rr6 follow-up): a
+// skeleton above contentSeedDecodeMaxValues values takes the conversion
+// charge before its decode; a refused charge decodes nothing.
+func TestRewriteOpenAIRequestSkeletonChargesLargeSkeleton(t *testing.T) {
+	tools := strings.Repeat(`{"type":"function","name":"f"},`, 3000)
+	body := `{"model":"m","tools":[` + tools[:len(tools)-1] + `],"input":[{"role":"user","content":"a"}]}`
+	charged := 0
+	charge := func() error { charged++; return nil }
+	_, _, ok, err := rewriteOpenAIRequestSkeleton([]byte(body), func(map[string]any) bool { return false }, charge)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 1, charged)
+
+	called := false
+	_, _, ok, err = rewriteOpenAIRequestSkeleton([]byte(body), func(map[string]any) bool { called = true; return false },
+		func() error { return ErrRequestConversionRefused })
+	require.ErrorIs(t, err, ErrRequestConversionRefused)
+	require.True(t, ok)
+	require.False(t, called)
+
+	_, _, _, err = rewriteOpenAIRequestSkeleton([]byte(`{"model":"m","tools":[{"type":"function","name":"f"}],"input":[]}`),
+		func(map[string]any) bool { return false }, func() error { t.Fatal("small skeleton charged"); return nil })
+	require.NoError(t, err)
 }
