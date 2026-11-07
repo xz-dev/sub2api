@@ -440,6 +440,6 @@ var coverPrimes = map[string]func(t *testing.T, srv coverServer, path string, bo
 // (TotalAlloc) may exceed its peak charge by for reasons outside the
 // request under test. Measured (rr10): the harness combo (recorder,
 // request, gin, sampler; nothing charged) allocates at most 11,784 B in
-// total at 16 MiB. 64 KiB is 5.6 x the harness cost and 0.3 % of the
-// smallest asserted charge (22 MiB: k_skel 11 x 2 MiB).
+// total at 16 MiB. 64 KiB is 5.6 x the harness cost and 0.4 % of the
+// smallest asserted charge (16 MiB: k_skel 8 x 2 MiB).
 const chargeCoverAllowance = 64 << 10
