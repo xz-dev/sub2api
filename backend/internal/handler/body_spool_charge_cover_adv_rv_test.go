@@ -65,8 +65,10 @@ func coverAdvRVShapes() []coverAdvShape {
 	plainA := func(n int) string { return strings.Repeat("a", max(1, n)) }
 	q := `"input":[{"role":"user","content":"q"}]}`
 
-	// 1. Cap boundary (4 KiB - 1, 4 KiB, 4 KiB + 1) on every capped field.
-	for _, l := range []int{4095, 4096, 4097} {
+	// 1. Cap boundary (4 KiB - 1, 4 KiB, 4 KiB + 1) on every capped field;
+	// item identifiers also at 255, 256 and 257 bytes (rr11): escaped ids
+	// within 6 x 64 raw bytes, which the input-ID checks decode in place.
+	for _, l := range []int{255, 256, 257, 4095, 4096, 4097} {
 		sfx := "_cap" + strconv.Itoa(l)
 		// 1a. Many items, each with one capped identifier at the cap.
 		add("many_fc_pair_callid"+sfx, func(model string, n int) []byte {
@@ -107,6 +109,9 @@ func coverAdvRVShapes() []coverAdvShape {
 				return `{"type":"function_call","namespace":"` + rvPlain(l, i) + `","call_id":"` + c + `","name":"f","arguments":"{}"},{"type":"function_call_output","call_id":"` + c + `","output":"ok"}`
 			})
 		})
+		if l < 4095 { // the root and metadata cells: at the cap only
+			continue
+		}
 		// 1b. Many metadata entries at the cap (value; key).
 		add("metadata_many_val"+sfx, func(model string, n int) []byte {
 			return rvArray(`{"model":"`+model+`","stream":false,"store":false,"metadata":{`, `},`+q, n, func(i int) string {
@@ -304,7 +309,7 @@ func coverAdvRV1EscShapes() []coverAdvShape {
 	} {
 		add(k.name+"_big", func(model string, n int) []byte { return coverAdvWrap(model, k.pre, k.post, n, rv1esc) })
 	}
-	for _, l := range []int{4096} {
+	for _, l := range []int{256, 4096} {
 		sfx := "_cap" + strconv.Itoa(l)
 		add("many_reasoning_id"+sfx, func(model string, n int) []byte {
 			return rvItems(model, n, func(i int) string {
@@ -327,6 +332,9 @@ func coverAdvRV1EscShapes() []coverAdvShape {
 				return `{"type":"message","role":"assistant","status":"` + rv1escIdent(l, i) + `","content":[{"type":"output_text","text":"a"}]}`
 			})
 		})
+		if l < 4096 { // not item identifiers
+			continue
+		}
 		add("metadata_many_val"+sfx, func(model string, n int) []byte {
 			return rvArray(`{"model":"`+model+`","stream":false,"store":false,"metadata":{`, `},`+q, n, func(i int) string {
 				return `"k` + strconv.Itoa(i) + `":"` + rv1escIdent(l, i) + `"`

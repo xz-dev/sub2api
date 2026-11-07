@@ -822,17 +822,19 @@ func normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body []byte, knownStoreFalse
 			}
 			return string(encoded), true, nil
 		}
-		typ := strings.TrimSpace(item.Get("type").String())
-		id := strings.TrimSpace(item.Get("id").String())
+		// The id and call_id are read in place, with no copy of an escaped
+		// one (rr11, openai_responses_item_id.go).
+		typ := strings.TrimSpace(rawItemString(item, "type"))
+		rsID := rawItemIDTrimmedHasPrefix(firstRawJSONMember(item, "id"), "rs_")
 		encrypted := item.Get("encrypted_content")
 		if (typ == "reasoning" && (encrypted.Type != gjson.String || strings.TrimSpace(encrypted.Str) == "")) ||
-			(typ == "item_reference" && strings.HasPrefix(id, "rs_")) {
+			(typ == "item_reference" && rsID) {
 			changed = true
 			return "", false, nil
 		}
-		stripID := typ == "reasoning" && strings.HasPrefix(id, "rs_")
-		addSummary := typ == "reasoning" && item.Get("summary").Type == gjson.Null
-		stripCallID := shouldStripOpenAIResponsesNonPairCallID(typ) && item.Get("call_id").Exists()
+		stripID := typ == "reasoning" && rsID
+		addSummary := typ == "reasoning" && firstRawJSONMember(item, "summary").Type == gjson.Null
+		stripCallID := shouldStripOpenAIResponsesNonPairCallID(typ) && firstRawJSONMember(item, "call_id").Exists()
 		if !stripID && !addSummary && !stripCallID {
 			return item.Raw, true, nil
 		}
@@ -906,12 +908,11 @@ func storeFalseReplayMayChange(input gjson.Result) bool {
 			may = true
 			return false
 		}
-		typ := strings.TrimSpace(item.Get("type").String())
-		id := strings.TrimSpace(item.Get("id").String())
+		typ := strings.TrimSpace(rawItemString(item, "type"))
 		switch {
-		case typ == "reasoning", typ == "item_reference" && strings.HasPrefix(id, "rs_"):
+		case typ == "reasoning", typ == "item_reference" && rawItemIDTrimmedHasPrefix(firstRawJSONMember(item, "id"), "rs_"):
 			may = true // dropped, or its id or summary rewritten
-		case shouldStripOpenAIResponsesNonPairCallID(typ) && item.Get("call_id").Exists():
+		case shouldStripOpenAIResponsesNonPairCallID(typ) && firstRawJSONMember(item, "call_id").Exists():
 			may = true
 		}
 		return !may
