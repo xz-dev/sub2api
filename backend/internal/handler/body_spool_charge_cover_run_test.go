@@ -121,6 +121,13 @@ func (u *coverUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.R
 		}
 	case strings.HasSuffix(path, "/messages/count_tokens"):
 		body = `{"input_tokens":10}`
+	case strings.HasSuffix(path, "/embeddings"):
+		body = `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],` +
+			`"model":"text-embedding-3-large","usage":{"prompt_tokens":10,"total_tokens":10}}`
+	case strings.HasSuffix(path, "/text-rerank"): // Bailian nested shape
+		body = `{"output":{"results":[{"index":0,"relevance_score":0.9}]},"usage":{"total_tokens":10},"request_id":"r1"}`
+	case strings.HasSuffix(path, "/rerank"):
+		body = `{"id":"r1","results":[{"index":0,"relevance_score":0.9}],"usage":{"total_tokens":10}}`
 	case strings.HasSuffix(path, "/messages"):
 		body = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5",` +
 			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",` +
