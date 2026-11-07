@@ -31,6 +31,22 @@ func TestKConvClasses(t *testing.T) {
 	}
 	require.Equal(t, worst, kConvClasses["unmeasured"].k, "an unmeasured route takes the worst class")
 
+	// The class comes from the matched route, so each path is served through
+	// an engine with the registered patterns of routes/gateway.go.
+	var covered, responsesFallback bool
+	var got string
+	engine := gin.New()
+	for _, pattern := range []string{
+		"/v1/responses", "/v1/responses/*subpath", "/responses", "/responses/*subpath",
+		"/backend-api/codex/responses", "/backend-api/codex/responses/*subpath",
+		"/v1/chat/completions", "/chat/completions",
+		"/v1/messages", "/v1/messages/count_tokens", "/messages/count_tokens",
+		"/antigravity/v1/messages", "/antigravity/v1/messages/count_tokens",
+		"/v1beta/models/*modelAction", "/v1beta/cachedContents", "/antigravity/v1beta/models/*modelAction",
+		"/v1/web_search", "/web_search", "/v1/images/generations",
+	} {
+		engine.POST(pattern, func(c *gin.Context) { got = kConvClassFor(c, covered, responsesFallback) })
+	}
 	for _, tc := range []struct {
 		path                       string
 		covered, responsesFallback bool
@@ -44,14 +60,34 @@ func TestKConvClasses(t *testing.T) {
 		{"/v1/messages", false, false, "messages"},
 		{"/antigravity/v1/messages", false, false, "messages"},
 		{"/v1/messages/count_tokens", false, false, "count_tokens"},
+		{"/messages/count_tokens", false, false, "count_tokens"},
+		{"/antigravity/v1/messages/count_tokens", false, false, "count_tokens"},
 		{"/v1beta/models/gemini-2.5-pro:generateContent", false, false, "gemini"},
 		{"/antigravity/v1beta/models/g:streamGenerateContent", false, false, "gemini"},
+		{"/v1beta/cachedContents", false, false, "unmeasured"},
 		{"/v1/web_search", false, false, "web_search"},
+		{"/web_search", false, false, "web_search"},
 		{"/v1/images/generations", false, false, "unmeasured"},
+		// Responses subpaths are served by the Responses handler, whatever
+		// their last segment.
+		{"/v1/responses/x/web_search", false, false, "unmeasured"},
+		{"/v1/responses/x/messages", false, false, "unmeasured"},
+		{"/v1/responses/x/count_tokens", false, false, "unmeasured"},
+		{"/v1/responses/x/chat/completions", false, false, "unmeasured"},
+		{"/responses/x/web_search", false, false, "unmeasured"},
+		{"/backend-api/codex/responses/x/web_search", false, false, "unmeasured"},
+		{"/v1/responses/x/web_search", false, true, "responses_fallback"},
 	} {
+		covered, responsesFallback, got = tc.covered, tc.responsesFallback, ""
+		engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", tc.path, nil))
+		require.Equal(t, tc.class, got, tc.path)
+	}
+	// Without a matched route the request path must equal a route.
+	for path, class := range map[string]string{"/web_search": "web_search", "/v1/chat/completions/": "chat",
+		"/v1/responses/x/web_search": "unmeasured", "/x/v1/messages": "unmeasured"} {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Request = httptest.NewRequest("POST", tc.path, nil)
-		require.Equal(t, tc.class, kConvClassFor(c, tc.covered, tc.responsesFallback), tc.path)
+		c.Request = httptest.NewRequest("POST", path, nil)
+		require.Equal(t, class, kConvClassFor(c, false, false), path)
 	}
 
 	const mib = 1 << 20

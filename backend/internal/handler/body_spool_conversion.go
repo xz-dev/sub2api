@@ -67,9 +67,30 @@ var kConvClasses = map[string]kConvClass{
 	"unmeasured": {k: 260},
 }
 
-// kConvClassFor names the charge class of c's request (kConvClasses).
+// kConvRouteClasses maps each registered route (routes/gateway.go) whose
+// protocol a class row measured to that class. The key is the matched route,
+// never a path suffix: a Responses subpath such as
+// /v1/responses/*subpath ending in /web_search is served by the Responses
+// handler and is not measured by the web_search row.
+var kConvRouteClasses = map[string]string{
+	"/v1/chat/completions":                    "chat",
+	"/chat/completions":                       "chat",
+	"/v1/messages/count_tokens":               "count_tokens",
+	"/messages/count_tokens":                  "count_tokens",
+	"/antigravity/v1/messages/count_tokens":   "count_tokens",
+	"/v1/messages":                            "messages",
+	"/antigravity/v1/messages":                "messages",
+	"/v1beta/models/*modelAction":             "gemini",
+	"/antigravity/v1beta/models/*modelAction": "gemini",
+	"/v1/web_search":                          "web_search",
+	"/web_search":                             "web_search",
+}
+
+// kConvClassFor names the charge class of c's request (kConvClasses). The
+// class comes from the matched route, c.FullPath(), or, when c has no matched
+// route, from the request path compared for equality; anything else is
+// unmeasured.
 func kConvClassFor(c *gin.Context, covered, responsesFallback bool) string {
-	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
 	switch {
 	case covered:
 		return "responses"
@@ -77,16 +98,13 @@ func kConvClassFor(c *gin.Context, covered, responsesFallback bool) string {
 		return "responses_fallback"
 	case isBareOpenAIResponsesPath(c):
 		return "responses_other_platform"
-	case strings.HasSuffix(path, "/chat/completions"):
-		return "chat"
-	case strings.HasSuffix(path, "/count_tokens"):
-		return "count_tokens"
-	case strings.HasSuffix(path, "/messages"):
-		return "messages"
-	case strings.Contains(path, "/v1beta/"):
-		return "gemini"
-	case strings.HasSuffix(path, "/web_search"):
-		return "web_search"
+	}
+	route := c.FullPath()
+	if route == "" {
+		route = strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	}
+	if class, ok := kConvRouteClasses[route]; ok {
+		return class
 	}
 	return "unmeasured"
 }
