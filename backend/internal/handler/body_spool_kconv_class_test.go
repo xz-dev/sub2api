@@ -90,6 +90,16 @@ func TestKConvClasses(t *testing.T) {
 		require.Equal(t, class, kConvClassFor(c, false, false), path)
 	}
 
+	// /v1beta/cachedContents is unmeasured, so it gets the unmeasured limit,
+	// below L, until it is measured. The routes test
+	// TestGatewayRoutesUnconvertedGeminiAndAntigravityRefuseAboveL serves it
+	// on a 4 GiB hop with this cfg and reads this limit from its 413.
+	covered, responsesFallback, got = false, false, ""
+	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1beta/cachedContents", nil))
+	cachedLimit := conversionLimit(cfg, 4<<30, false, false, kConvFor(cfg, got))
+	require.Equal(t, conversionLimit(cfg, 4<<30, false, false, kConvFor(cfg, "unmeasured")), cachedLimit)
+	require.Less(t, cachedLimit, cfg.FallbackLimit, "the unmeasured limit at 4 GiB is below L")
+
 	const mib = 1 << 20
 	production := map[string]float64{"responses": 0.21, "responses_fallback": 0.21, "responses_other_platform": 0.21,
 		"chat": 0.53, "messages": 0.53, "count_tokens": 0.53, "gemini": 0.53, "web_search": 0.53, "unmeasured": 0.53}
