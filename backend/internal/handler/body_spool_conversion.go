@@ -63,6 +63,15 @@ var kConvClasses = map[string]kConvClass{
 	"gemini": {k: 147, measured: 127.13},
 	// /web_search (Grok): rr6_tinyinvalid, 16 MiB (24.56).
 	"web_search": {k: 65, measured: 24.56},
+	// /embeddings (OpenAI API-key accounts only; M3, measured at 1 and
+	// 4 MiB, f3db26d98a): the blocking guard on, an array of strings,
+	// 1 MiB (5.91); model mapping 4.06, plain 3.05. At 64 KiB the fixed
+	// per-request cost dominates: 10.87.
+	"embeddings": {k: 65, measured: 5.91},
+	// /rerank (OpenAI API-key accounts only; M3, 1 and 4 MiB): a mapped
+	// Bailian text-rerank model (body rebuilt nested), many documents,
+	// chunked, 1 MiB (8.09); the guard 4.86, plain 3.05. At 64 KiB: 9.38.
+	"rerank": {k: 65, measured: 8.09},
 	// Any other route: not measured, so the worst class.
 	"unmeasured": {k: 260},
 }
@@ -84,6 +93,9 @@ var kConvRouteClasses = map[string]string{
 	"/antigravity/v1beta/models/*modelAction": "gemini",
 	"/v1/web_search":                          "web_search",
 	"/web_search":                             "web_search",
+	"/v1/embeddings":                          "embeddings",
+	"/embeddings":                             "embeddings",
+	"/v1/rerank":                              "rerank",
 }
 
 // kConvClassFor names the charge class of c's request (kConvClasses). The
