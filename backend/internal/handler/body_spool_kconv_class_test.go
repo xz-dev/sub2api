@@ -43,7 +43,7 @@ func TestKConvClasses(t *testing.T) {
 		"/v1/messages", "/v1/messages/count_tokens", "/messages/count_tokens",
 		"/antigravity/v1/messages", "/antigravity/v1/messages/count_tokens",
 		"/v1beta/models/*modelAction", "/v1beta/cachedContents", "/antigravity/v1beta/models/*modelAction",
-		"/v1/web_search", "/web_search", "/v1/images/generations",
+		"/v1/web_search", "/web_search", "/v1/embeddings", "/embeddings", "/v1/rerank", "/v1/images/generations",
 	} {
 		engine.POST(pattern, func(c *gin.Context) { got = kConvClassFor(c, covered, responsesFallback) })
 	}
@@ -67,6 +67,9 @@ func TestKConvClasses(t *testing.T) {
 		{"/v1beta/cachedContents", false, false, "unmeasured"},
 		{"/v1/web_search", false, false, "web_search"},
 		{"/web_search", false, false, "web_search"},
+		{"/v1/embeddings", false, false, "embeddings"},
+		{"/embeddings", false, false, "embeddings"},
+		{"/v1/rerank", false, false, "rerank"},
 		{"/v1/images/generations", false, false, "unmeasured"},
 		// Responses subpaths are served by the Responses handler, whatever
 		// their last segment.
@@ -76,6 +79,9 @@ func TestKConvClasses(t *testing.T) {
 		{"/v1/responses/x/chat/completions", false, false, "unmeasured"},
 		{"/responses/x/web_search", false, false, "unmeasured"},
 		{"/backend-api/codex/responses/x/web_search", false, false, "unmeasured"},
+		{"/v1/responses/embeddings", false, false, "unmeasured"},
+		{"/v1/responses/x/rerank", false, false, "unmeasured"},
+		{"/responses/embeddings", false, false, "unmeasured"},
 		{"/v1/responses/x/web_search", false, true, "responses_fallback"},
 	} {
 		covered, responsesFallback, got = tc.covered, tc.responsesFallback, ""
@@ -102,7 +108,7 @@ func TestKConvClasses(t *testing.T) {
 
 	const mib = 1 << 20
 	production := map[string]float64{"responses": 0.21, "responses_fallback": 0.21, "responses_other_platform": 0.21,
-		"chat": 0.53, "messages": 0.53, "count_tokens": 0.53, "gemini": 0.53, "web_search": 0.53, "unmeasured": 0.53}
+		"chat": 0.53, "messages": 0.53, "count_tokens": 0.53, "gemini": 0.53, "web_search": 0.53, "embeddings": 0.53, "rerank": 0.53, "unmeasured": 0.53}
 	for name := range kConvClasses {
 		k := kConvFor(cfg, name)
 		limit := conversionLimit(cfg, 320<<20, name == "responses", false, k)
