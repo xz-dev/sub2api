@@ -82,11 +82,17 @@ const (
 	// 4 KiB identifier). Worst on-list total-allocation k over p1-p7, the
 	// full generator and the client shapes: 9.08, adv_rv1_many_reasoning_id
 	// _cap4096 at 2 MiB (many reasoning items, each with a 4 KiB id holding
-	// one escape: a per-value cap does not bound the sum). 11 = max(8,
-	// ceil(9.08 x 1.15)). S_h = (320 - 32 - 48) / 11 = 21.8 MiB >= S, so S
-	// stays 16 MiB inline (8 MiB ticketed); a 16 MiB request is charged
-	// 176 MiB: one fits a 320m hop at a time.
-	DefaultBodySpoolKSkel float64 = 11
+	// one escape: a per-value cap does not bound the sum), so rr11 set 11.
+	// rr11 ablation: the cost was gjson unescaping each escaped item id on
+	// three walks (input-ID sanitizer, store=false replay); those checks now
+	// read the id in place (openai_responses_item_id.go), and that shape is
+	// k 5.13. Worst on-list total-allocation k over the same corpus: 6.46,
+	// adv_rv1_developer_part_big at 2 MiB (sblock + guard, force_responses).
+	// 8 = max(8, ceil(6.46 x 1.15)). k_path worst 10.31 (compact,
+	// adv_rv1_instructions_big): 10.31 x 1.15 = 11.9 <= 17. S_h = (320 - 32 - 48) / 8 = 30 MiB
+	// >= S, so S stays 16 MiB inline (8 MiB ticketed); a 16 MiB request is
+	// charged 128 MiB: one fits an idle 320m hop at a time.
+	DefaultBodySpoolKSkel float64 = 8
 	// k_conv: a request a protocol converter rewrites, or that is decoded
 	// whole (every converter and Forward's full decode take it). Measured
 	// in-process: peak live heap / body bytes, default GOGC, no memory

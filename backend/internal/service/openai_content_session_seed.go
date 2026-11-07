@@ -244,7 +244,7 @@ const contentSeedDecodeMaxValues = 4096
 // decoded on the verified-raw path without a charge (content seed,
 // transcript, tool schema, turn metadata). The value cap alone let one
 // large string through (rr9: a 16 MiB first user message of one escaped
-// string cost k 7-8 on the verified-raw path, charged k_skel, then 6; 11 since rr11): the
+// string cost k 7-8 on the verified-raw path, charged k_skel, then 6; 11 in rr11, 8 again after the rr11 ablation): the
 // decode copies the string and the re-encode writes it again, up to 6 x
 // for < > & (json.Marshal escapes them). Measured at 32 KiB: about 170 KB
 // allocated for escaped text, about 1.2 MB for a string of only '<'. It

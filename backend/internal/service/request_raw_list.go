@@ -13,7 +13,7 @@ import (
 
 // Verified-raw list (review rr6, fail-safe charge). The body-spool ingest
 // charges a request its route's base factor only when every part of the
-// request is on this list: k_skel (11) on a covered Responses route, the
+// request is on this list: k_skel (8) on a covered Responses route, the
 // measured k_path 17 on a Responses-protocol fallback route (compact, or a
 // Content-Encoding body). Anything else takes the k_conv top-up up front,
 // before any decode, or gets the named S_conv / L_conv 413 or the 503
