@@ -4,6 +4,7 @@ package handler
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -128,6 +129,52 @@ func TestOpenAIResponsesOrdinaryProvider5xxStillFailsOver(t *testing.T) {
 	c, _ := newLargeBodyTestContext("/v1/responses", largeResponsesTextBody(1<<10), "")
 	h.Responses(c)
 	require.Equal(t, int32(2), upstream.calls.Load(), "ordinary 5xx keeps failing over")
+}
+
+func TestOpenAIChatConvertedRequestScopedErrorsPassThrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		for _, tc := range requestScopedErrorCases {
+			// A provider 413 without a named hop retains the Chat compatibility writer.
+			if tc.name == "provider_413" {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/stream_%t", tc.name, stream), func(t *testing.T) {
+				upstream := &scriptedErrorUpstream{
+					status: tc.status,
+					header: http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"rid-chat-scoped"}},
+					body:   tc.body,
+				}
+				accounts := largeBodyTestAccounts("apikey")
+				for i := range accounts {
+					accounts[i].Credentials["pool_mode"] = true
+					accounts[i].Credentials["pool_mode_retry_status_codes"] = []any{float64(tc.status)}
+				}
+				h := newLargeBodyTestHandlerWithAccounts(t, upstream, accounts)
+				body := []byte(fmt.Sprintf(`{"model":"gpt-5.2","messages":[{"role":"user","content":"synthetic"}],"stream":%t}`, stream))
+				c, rec := newLargeBodyTestContext("/v1/chat/completions", body, "")
+				h.ChatCompletions(c)
+				require.Equal(t, int32(1), upstream.calls.Load(), "no pool retry or account switch")
+				require.Equal(t, tc.status, rec.Code)
+				require.Equal(t, tc.body, rec.Body.String())
+				require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+				require.Equal(t, "rid-chat-scoped", rec.Header().Get("X-Request-Id"))
+			})
+		}
+	}
+}
+
+func TestOpenAIChatConvertedOrdinaryProvider5xxStillFailsOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &scriptedErrorUpstream{
+		status: http.StatusServiceUnavailable,
+		header: http.Header{"Content-Type": []string{"application/json"}},
+		body:   `{"error":{"type":"server_error","code":"insufficient_memory","message":"provider error without hop"}}`,
+	}
+	h := newLargeBodyTestHandler(t, upstream, "apikey")
+	c, _ := newLargeBodyTestContext("/v1/chat/completions", []byte(`{"model":"gpt-5.2","messages":[{"role":"user","content":"synthetic"}]}`), "")
+	h.ChatCompletions(c)
+	require.Equal(t, int32(2), upstream.calls.Load(), "ordinary 5xx retains account failover")
 }
 
 func byteSizeName(n int) string {
