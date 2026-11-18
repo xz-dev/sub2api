@@ -49,6 +49,9 @@ func TestOpenAICompatAnthropicDigestLongestPrefix(t *testing.T) {
 // (a ~2 MiB body of tiny messages) is looked up with allocations linear in
 // the parts, not in parts x chain length (rr10: 27 GB at 2 MiB before).
 func TestOpenAICompatAnthropicDigestLookupIsLinear(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	s := &OpenAIGatewayService{}
 	account := &Account{ID: 7}
 	parts := make([]string, 100_000)

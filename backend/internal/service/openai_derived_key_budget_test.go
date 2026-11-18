@@ -55,6 +55,9 @@ func advItemsBody(role, unit string, itemBytes, size int) []byte {
 // O(body): the seed's only body-sized cost is the copy of the raw items
 // into it (Builder growth), the transcript has none.
 func TestDerivedKeyBudgetBoundsCanonicalWork(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	for _, tc := range []struct {
 		role, unit string
 		item       int
@@ -92,6 +95,9 @@ func TestDerivedKeyBudgetKeepsSmallKeys(t *testing.T) {
 // input string past contentSeedDecodeMaxBytes is written raw: and as sent,
 // without an unescape; an escape-free one is a view, as before.
 func TestDerivedKeyBudgetStringFields(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	esc := strings.Repeat(`a\"b\n\u00e9`, 1<<20)
 	plain := strings.Repeat("abc ", 1<<20)
 	for _, tc := range []struct{ name, body, want string }{
@@ -130,6 +136,9 @@ func TestDerivedKeyBudgetSpoolParity(t *testing.T) {
 // TestParseJSONNumberBounded (rr10): the same float64 as strconv for any
 // JSON number, and no allocation for a long literal.
 func TestParseJSONNumberBounded(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	long := func(s string, n int) string { return strings.Repeat(s, n) }
 	for _, lit := range []string{
 		"0", "-0", "1", "123", "1.5", "-2.25e-3", "1e308", "1e309", "-1e309", "4.9e-324", "1e-400",
@@ -162,6 +171,9 @@ func TestParseJSONNumberBounded(t *testing.T) {
 // TestRawJSONStringBlank: strings.TrimSpace of the value is "", decided
 // without unescaping.
 func TestRawJSONStringBlank(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	for _, raw := range []string{
 		`""`, `" "`, `"\n\t\r "`, `"\u0020\u3000"`, `"\u00a0x"`, `"x"`, `" \u0085"`, `"\ud800"`, `"\ud83d\ude00"`,
 		`"\f\b"`, `"\\ "`, `"\/"`, "\"\u2028 \"", `"\u000b"`, `"\u000B"`, `"\uZZZZ"`, `"\u12"`, `"\`, `null`,

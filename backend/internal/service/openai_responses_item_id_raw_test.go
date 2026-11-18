@@ -76,6 +76,9 @@ func TestRawItemIDChecksMatchDecoded(t *testing.T) {
 
 // The checks allocate nothing, also for a long escaped id.
 func TestRawItemIDChecksAllocateNothing(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	id := gjson.Parse(`{"id":"x1_\n` + strings.Repeat("a", 4090) + `"}`)
 	v := firstRawJSONMember(id, "id")
 	ws := firstRawJSONMember(gjson.Parse(`{"id":"`+strings.Repeat(`\t`, 2000)+`rs_1"}`), "id")

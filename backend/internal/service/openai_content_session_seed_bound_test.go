@@ -23,6 +23,9 @@ func contentSeedJSONForTest(raw string) string {
 // most contentSeedDecodeMaxValues values keeps its canonical form; a larger
 // one is written as sent, without a decode.
 func TestContentSeedJSONBounded(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	small := `[{"type":"function", "name":"f","parameters":{"type":"object"}}]`
 	require.Equal(t, normalizeCompatSeedJSON(rawJSONView(small)), contentSeedJSONForTest(small))
 	require.False(t, rawJSONValuesAbove(`["a,b{[","c\"],d"]`, 3))
@@ -72,6 +75,9 @@ func TestContentSeedRawFieldOverSpliceStream(t *testing.T) {
 // written as sent, without a decode; so is a field holding a spool marker.
 // The byte cap must not exceed the spool threshold T.
 func TestContentSeedJSONBoundedInBytes(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	require.LessOrEqual(t, contentSeedDecodeMaxBytes, bodyspool.DefaultThreshold)
 	big := `"` + strings.Repeat(`line \"quoted\" caf\u00e9 text\n`, 1<<15) + `"`
 	require.Greater(t, len(big), contentSeedDecodeMaxBytes)
