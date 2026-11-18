@@ -37,6 +37,9 @@ var requestConverters = map[string]bool{
 	"wrapV1InternalRequest":                        true,
 	"extractImageInputSize":                        true,
 	"hasUniqueJSONMembers":                         true,
+	// Upstream v0.2.20+ Codex untrusted-context normalizer (whole-body decode).
+	"normalizeCodexUntrustedContextCharged": true,
+	"validCodexPageSnapshot":                true,
 }
 
 // chargerTaking are functions that take the k_conv charger as a parameter
