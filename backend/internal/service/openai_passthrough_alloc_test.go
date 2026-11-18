@@ -18,6 +18,9 @@ import (
 // passthrough request normalizers allocate a small fraction of the body
 // (they took about 30 x, 7 x and 5 x).
 func TestPassthroughNormalizersAllocateLittleWhenUnchanged(t *testing.T) {
+	if runAllocTestIsolated(t) {
+		return
+	}
 	var b bytes.Buffer
 	_, _ = b.WriteString(`{"model":"m","store":false,"input":[`)
 	for i := 0; b.Len() < 4<<20; i++ {

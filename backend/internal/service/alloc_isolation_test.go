@@ -1,5 +1,3 @@
-//go:build unit
-
 package service
 
 import (
@@ -22,7 +20,8 @@ func runAllocTestIsolated(t *testing.T) bool {
 	if os.Getenv(allocIsolatedEnv) == "1" {
 		return false
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
+	// Re-executes this test binary for the current test name only; no external input.
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v") //nolint:gosec // G702: argv is the test binary and t.Name()
 	cmd.Env = append(os.Environ(), allocIsolatedEnv+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
