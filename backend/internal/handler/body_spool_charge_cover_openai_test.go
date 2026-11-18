@@ -142,12 +142,22 @@ func coverOpenAICombos() []coverCombo {
 	return out
 }
 
+// coverOpenAIModel: gpt-5.5, except on the Codex OAuth account, where
+// upstream v0.2.20+ retired it (openai_model_retirement.go) and refuses the
+// request before any conversion; gpt-5.4 keeps the same body shapes.
+func coverOpenAIModel(kind string) string {
+	if kind == "oauth" {
+		return "gpt-5.4"
+	}
+	return "gpt-5.5"
+}
+
 // coverOpenAICombo is route rt on an account of kind and Responses mode;
 // sessionBlock turns the cyber session block on (coverSessionBlockDeps),
 // guard the blocking prompt guard (coverGuardOn).
 func coverOpenAICombo(rt coverOpenAIRoute, name, kind, mode string, sessionBlock, guard bool) coverCombo {
 	return coverCombo{
-		route: rt.route, account: name, proto: rt.proto, model: "gpt-5.5",
+		route: rt.route, account: name, proto: rt.proto, model: coverOpenAIModel(kind),
 		pattern: rt.pattern, path: rt.pattern, sessionBlock: sessionBlock,
 		setup: func(t *testing.T) (http.Handler, *config.Config, *coverUpstream) {
 			up := &coverUpstream{}

@@ -62,7 +62,14 @@ func requireSameCompactionNormalization(t *testing.T, body []byte) {
 	want, wantChanged, wantErr := referenceNormalizeCompactionTriggerInputOrder(body)
 	require.Equal(t, wantErr != nil, err != nil, "error mismatch for %s", body)
 	require.Equal(t, wantChanged, changed, "changed mismatch for %s", body)
-	require.Equal(t, string(want), string(got), "body mismatch for %s", body)
+	if !changed {
+		require.Equal(t, string(want), string(got), "body mismatch for %s", body)
+		return
+	}
+	// The capacity raw rewrite (rr4) keeps each item's bytes and member
+	// order instead of re-marshaling the decoded map, so a rewritten body is
+	// the reference value, not its byte form.
+	require.JSONEq(t, string(want), string(got), "body mismatch for %s", body)
 }
 
 func TestCompactionTriggerOrderFastPathMatchesDecode(t *testing.T) {
