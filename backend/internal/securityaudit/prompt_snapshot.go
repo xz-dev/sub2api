@@ -194,14 +194,14 @@ func buildPrioritizedScanText(segments promptPieces, priority int) string {
 	b.Grow(size)
 	index := 0
 	segments.eachPiece(func(s string) bool {
-		switch {
-		case index == 0:
-		case index == priority:
-			b.WriteString(promptAuditPrioritySeparator)
+		switch index {
+		case 0:
+		case priority:
+			_, _ = b.WriteString(promptAuditPrioritySeparator)
 		default:
-			b.WriteString(segments.joiner)
+			_, _ = b.WriteString(segments.joiner)
 		}
-		b.WriteString(s)
+		_, _ = b.WriteString(s)
 		index++
 		return true
 	})

@@ -34,7 +34,7 @@ func TestMarkerCollisionFailsClosed(t *testing.T) {
 	body := []byte(`{"input":"x` + fixed.Hex()[:31] + fixed.Hex() + `"}`)
 	f, err := d.Create()
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, _, err = Ingest(&chunkReader{b: body, rng: newTestRand()}, f, testOpts)
 	require.ErrorIs(t, err, ErrMarkerCollision)
 }

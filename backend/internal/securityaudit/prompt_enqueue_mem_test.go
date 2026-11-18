@@ -46,14 +46,14 @@ func settledLiveHeap() uint64 {
 // calls and outputs, like the Codex transcripts the large-request work uses.
 func largeTranscriptBody(size int) []byte {
 	var b strings.Builder
-	b.WriteString(`{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}`)
+	_, _ = b.WriteString(`{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]}`)
 	out := strings.Repeat("output line of a tool ", 200)
 	for i := 0; b.Len() < size; i++ {
 		id := strconv.Itoa(i)
-		b.WriteString(`,{"type":"function_call","call_id":"c` + id + `","name":"shell","arguments":"{\"cmd\":\"ls ` + id + `\"}"}`)
-		b.WriteString(`,{"type":"function_call_output","call_id":"c` + id + `","output":"` + out + `"}`)
+		_, _ = b.WriteString(`,{"type":"function_call","call_id":"c` + id + `","name":"shell","arguments":"{\"cmd\":\"ls ` + id + `\"}"}`)
+		_, _ = b.WriteString(`,{"type":"function_call_output","call_id":"c` + id + `","output":"` + out + `"}`)
 	}
-	b.WriteString(`,{"type":"message","role":"user","content":[{"type":"input_text","text":"latest question"}]}]}`)
+	_, _ = b.WriteString(`,{"type":"message","role":"user","content":[{"type":"input_text","text":"latest question"}]}]}`)
 	return []byte(b.String())
 }
 
@@ -125,7 +125,7 @@ func TestPromptServiceAsyncHoldsChargeUntilCommitDone(t *testing.T) {
 			return func() { released.Store(true) }
 		}
 		require.NoError(t, svc.Enqueue(context.Background(), Request{RequestID: "r", Protocol: "openai_responses", Body: body, RetainMemory: retain}))
-		body = nil
+		body = nil //nolint:ineffassign // drop the test's reference so the heap measurement below sees only what Enqueue retains
 		<-repo.entered
 		kept := int64(settledLiveHeap()) - int64(base)
 		t.Logf("%d segments: the job keeps %d B, the hold is %d B (%.3f)", segments, kept, held.Load(), float64(held.Load())/float64(kept))

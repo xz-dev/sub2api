@@ -115,19 +115,19 @@ func randomGuardDocument(rng *rand.Rand, depth int) string {
 	switch {
 	case depth < 6 && k < 4:
 		var b strings.Builder
-		b.WriteByte('{')
+		_ = b.WriteByte('{')
 		for n := 1 + rng.Intn(4); n > 0; n-- {
 			if b.Len() > 1 {
-				b.WriteByte(',')
+				_ = b.WriteByte(',')
 			}
 			keys := guardDocKeys
 			if depth == 0 || (depth == 2 && rng.Intn(3) == 0) {
 				keys = guardRootKeys
 			}
-			b.WriteString(`"` + keys[rng.Intn(len(keys))] + `":`)
-			b.WriteString(randomGuardDocument(rng, depth+1))
+			_, _ = b.WriteString(`"` + keys[rng.Intn(len(keys))] + `":`)
+			_, _ = b.WriteString(randomGuardDocument(rng, depth+1))
 		}
-		b.WriteByte('}')
+		_ = b.WriteByte('}')
 		return b.String()
 	case depth < 6 && k < 6:
 		items := make([]string, rng.Intn(4))
@@ -150,11 +150,11 @@ func TestJSONUnquoteMatchesUnmarshal(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 5000; i++ {
 		var b strings.Builder
-		b.WriteByte('"')
+		_ = b.WriteByte('"')
 		for n := rng.Intn(8); n > 0; n-- {
-			b.WriteString(pieces[rng.Intn(len(pieces))])
+			_, _ = b.WriteString(pieces[rng.Intn(len(pieces))])
 		}
-		b.WriteByte('"')
+		_ = b.WriteByte('"')
 		lit := b.String()
 		var want string
 		require.NoError(t, json.Unmarshal([]byte(lit), &want), lit)
@@ -184,7 +184,7 @@ func TestIsMediaPromptKeyMatchesLegacy(t *testing.T) {
 	for i := 0; i < 20000; i++ {
 		var b strings.Builder
 		for n := rng.Intn(6); n > 0; n-- {
-			b.WriteString(pieces[rng.Intn(len(pieces))])
+			_, _ = b.WriteString(pieces[rng.Intn(len(pieces))])
 		}
 		key := b.String()
 		require.Equal(t, legacyIsMediaPromptKey(key), isMediaPromptKey(key), "%q", key)
@@ -201,14 +201,14 @@ func TestIsMediaPromptKeyMatchesLegacy(t *testing.T) {
 func guardShapeBodies(n int) map[string][]byte {
 	repeat := func(head, item, tail string) []byte {
 		var b strings.Builder
-		b.WriteString(head)
+		_, _ = b.WriteString(head)
 		for i := 0; b.Len() < n; i++ {
 			if i > 0 {
-				b.WriteByte(',')
+				_ = b.WriteByte(',')
 			}
-			b.WriteString(strings.ReplaceAll(item, "#", strconv.Itoa(i)))
+			_, _ = b.WriteString(strings.ReplaceAll(item, "#", strconv.Itoa(i)))
 		}
-		b.WriteString(tail)
+		_, _ = b.WriteString(tail)
 		return []byte(b.String())
 	}
 	return map[string][]byte{

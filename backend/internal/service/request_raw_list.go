@@ -225,9 +225,10 @@ func rawValueEnd(raw string, i int) int {
 		for ; i < len(raw); i++ {
 			c := raw[i]
 			if inString {
-				if c == '\\' {
+				switch c {
+				case '\\':
 					i++
-				} else if c == '"' {
+				case '"':
 					inString = false
 				}
 				continue
@@ -361,8 +362,6 @@ func rawStr(v string) (string, bool) {
 	}
 	return v[1 : len(v)-1], true
 }
-
-func rawAny(string) string { return "" }
 
 // rawAnyNames: any value; an object's member names plain and within
 // rawNameMaxBytes (gjson and sjson sites match them by name).

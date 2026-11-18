@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/bodyspool"
 	"github.com/tidwall/gjson"
 )
 
@@ -261,19 +260,6 @@ const contentSeedDecodeMaxValues = 4096
 // a request of many such values: the seed and the transcript also pay
 // every decode from a derivedKeyBudget (rr10).
 const contentSeedDecodeMaxBytes = 32 << 10
-
-// contentSeedDecodeBounded reports whether the JSON text raw may be
-// decoded into its canonical form by a per-value site (tool schema, turn
-// metadata): at most contentSeedDecodeMaxBytes bytes and
-// contentSeedDecodeMaxValues values, and no spool marker. A field with a
-// spooled string is above the byte cap on the whole body (the string
-// alone has at least T bytes), so the marker test gives the skeleton the
-// same answer; a field without one is the same bytes on both. (A body
-// that holds the text \u0000lrc itself is treated alike on both.)
-func contentSeedDecodeBounded(raw string) bool {
-	return len(raw) <= contentSeedDecodeMaxBytes && !bodyspool.MayHoldMarker(raw) &&
-		!rawJSONValuesAbove(raw, contentSeedDecodeMaxValues)
-}
 
 // writeContentSeedJSON writes one field of the content session seed:
 // canonical JSON (decoded and re-encoded, keys sorted) when the budget

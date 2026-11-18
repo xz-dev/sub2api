@@ -73,7 +73,9 @@ func bodySpoolRuntimeFor(cfg *config.Config) *bodySpoolRuntime {
 		return nil
 	}
 	if v, ok := bodySpoolRuntimes.Load(cfg); ok {
-		return v.(*bodySpoolRuntime)
+		if rt, ok := v.(*bodySpoolRuntime); ok {
+			return rt
+		}
 	}
 	rt := &bodySpoolRuntime{cfg: cfg.Gateway.BodySpool.Effective(), cap: gatewayMaxBodySize(cfg)}
 	if rt.dir, rt.err = bodyspool.OpenDir(rt.cfg.Dir, rt.cfg.DiskReserve); rt.err == nil {
@@ -82,7 +84,10 @@ func bodySpoolRuntimeFor(cfg *config.Config) *bodySpoolRuntime {
 		rt.meter, rt.err = bodyspool.SharedMeter(rt.cfg.CgroupDir)
 	}
 	v, _ := bodySpoolRuntimes.LoadOrStore(cfg, rt)
-	return v.(*bodySpoolRuntime)
+	if stored, ok := v.(*bodySpoolRuntime); ok {
+		return stored
+	}
+	return rt
 }
 
 const bodySpoolStateKey = "large_request_body_spool_state"
@@ -112,8 +117,8 @@ func releaseRequestBodySpool(c *gin.Context) {
 	if !ok {
 		return
 	}
-	st := v.(*bodySpoolState)
-	if st.released {
+	st, ok := v.(*bodySpoolState)
+	if !ok || st.released {
 		return
 	}
 	st.released = true
@@ -147,8 +152,8 @@ func ReleaseLargeRequestState(cfg *config.Config) gin.HandlerFunc {
 		if !ok {
 			return
 		}
-		st := v.(*bodySpoolState)
-		if !st.released || st.chargedAtRelease < bodyspool.ReclaimAfterRelease {
+		st, ok := v.(*bodySpoolState)
+		if !ok || !st.released || st.chargedAtRelease < bodyspool.ReclaimAfterRelease {
 			return
 		}
 		if c.Request != nil {
@@ -609,8 +614,8 @@ func auditBodyForSpool(c *gin.Context, legacyModerates, promptReads func() bool,
 	if !ok {
 		return body, nil
 	}
-	st := v.(*bodySpoolState)
-	if st.released || st.spool == nil {
+	st, ok := v.(*bodySpoolState)
+	if !ok || st.released || st.spool == nil {
 		return body, nil
 	}
 	if legacyModerates() {
@@ -664,8 +669,8 @@ func chargeGuardDecode(c *gin.Context, promptReads func() bool, body []byte) *ca
 	if !ok || len(body) == 0 {
 		return nil
 	}
-	st := v.(*bodySpoolState)
-	if st.released || !promptReads() {
+	st, ok := v.(*bodySpoolState)
+	if !ok || st.released || !promptReads() {
 		return nil
 	}
 	n := int64(securityaudit.InvalidUTF8ChargeK) * int64(securityaudit.InvalidUTF8Bytes(body))
@@ -691,8 +696,8 @@ func retainRequestMemory(c *gin.Context) func(int64) func() {
 	if !ok {
 		return nil
 	}
-	st := v.(*bodySpoolState)
-	if st.released || st.charge == nil {
+	st, ok := v.(*bodySpoolState)
+	if !ok || st.released || st.charge == nil {
 		return nil
 	}
 	return func(n int64) func() { return st.charge.Detach(roundUpGranule(n)) }
@@ -705,6 +710,10 @@ func writeBodySpoolAuditRefusal(c *gin.Context) bool {
 	if !ok {
 		return false
 	}
-	writeCapacityRefusal(c, v.(*capacityRefusal))
+	refusal, ok := v.(*capacityRefusal)
+	if !ok {
+		return false
+	}
+	writeCapacityRefusal(c, refusal)
 	return true
 }

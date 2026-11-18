@@ -440,45 +440,6 @@ func normalizeSegmentsLatestUserFirst(values []promptSegment) []string {
 	return result
 }
 
-// blockingSegmentsLatestUserAndPreviousOutput limits synchronous guard input to
-// the current user turn and the nearest preceding assistant/model turn. It is
-// deliberately opt-in because full transcript scanning remains stronger at
-// finding client-controlled content placed in older or non-user messages.
-//
-// The latest turn's parts are returned as the first priority segments, not
-// joined: buildPrioritizedScanText joins them with the same "\n\n", so the
-// scan text is unchanged and no extra copy is made.
-func blockingSegmentsLatestUserAndPreviousOutput(values []promptSegment) (segments []string, priority int) {
-	normalized := normalizedPromptSegments(values)
-	latestUserStart := latestUserSegmentStart(normalized)
-	if latestUserStart < 0 {
-		// A request without user content cannot be narrowed safely. Preserve the
-		// established full-snapshot behavior for unusual protocol payloads.
-		return normalizeSegmentsLatestUserFirst(values), 1
-	}
-	latestUserEnd := latestUserStart
-	for latestUserEnd < len(normalized) && isUserSegment(normalized[latestUserEnd]) {
-		latestUserEnd++
-	}
-	// A single client turn may have several text content parts. Keep them in
-	// the priority segment so every part of the latest input is scanned before
-	// the prior output begins.
-	selected := normalized[latestUserStart:latestUserEnd:latestUserEnd]
-	priority = len(selected)
-	for index := latestUserStart - 1; index >= 0; index-- {
-		if !isAssistantOutputSegment(normalized[index]) {
-			continue
-		}
-		start := index
-		for start > 0 && isAssistantOutputSegment(normalized[start-1]) {
-			start--
-		}
-		selected = append(selected, normalized[start:index+1]...)
-		break
-	}
-	return promptSegmentTexts(selected), priority
-}
-
 func normalizedPromptSegments(values []promptSegment) []promptSegment {
 	normalized := make([]promptSegment, 0, len(values))
 	for _, value := range values {

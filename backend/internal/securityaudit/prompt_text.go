@@ -127,10 +127,10 @@ func (p promptPieces) head(n int) string {
 	var b strings.Builder
 	p.each(func(s string) bool {
 		if room := n - b.Len(); len(s) > room {
-			b.WriteString(cutToRuneStart(s, room))
+			_, _ = b.WriteString(cutToRuneStart(s, room))
 			return false
 		}
-		b.WriteString(s)
+		_, _ = b.WriteString(s)
 		return true
 	})
 	return b.String()
@@ -162,7 +162,7 @@ func (p promptPieces) fullPrompt(maxRunes int) string {
 		// Stripping NULs can join invalid bytes into a rune; keep the exact
 		// legacy result for such text (JSON-decoded text is always valid).
 		var b strings.Builder
-		p.each(func(s string) bool { b.WriteString(s); return true })
+		p.each(func(s string) bool { _, _ = b.WriteString(s); return true })
 		return TrimRunes(strings.TrimSpace(strings.ReplaceAll(b.String(), "\x00", "")), maxRunes)
 	}
 	// Two walks: the first finds how many bytes are kept, so the second
@@ -195,7 +195,7 @@ func (p promptPieces) fullPrompt(maxRunes int) string {
 				count++
 				written += n
 				if b != nil && written <= limit {
-					b.WriteString(piece)
+					_, _ = b.WriteString(piece)
 				}
 				if !space {
 					size = written
@@ -213,7 +213,7 @@ func (p promptPieces) fullPrompt(maxRunes int) string {
 	if truncated {
 		b.Grow(size + len("…"))
 		walk(&b, size)
-		b.WriteString("…")
+		_, _ = b.WriteString("…")
 	} else {
 		b.Grow(size)
 		walk(&b, size)

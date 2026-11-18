@@ -37,16 +37,16 @@ func responsesTextBody(parts ...[2]string) []byte {
 // it). Texts must not need escapes.
 func rawResponsesBody(parts ...[2]string) []byte {
 	var b bytes.Buffer
-	b.WriteString(`{"model":"m","input":[`)
+	_, _ = b.WriteString(`{"model":"m","input":[`)
 	for i, p := range parts {
 		if i > 0 {
-			b.WriteByte(',')
+			_ = b.WriteByte(',')
 		}
-		b.WriteString(`{"type":"message","role":"` + p[0] + `","content":[{"type":"input_text","text":"`)
-		b.WriteString(p[1])
-		b.WriteString(`"}]}`)
+		_, _ = b.WriteString(`{"type":"message","role":"` + p[0] + `","content":[{"type":"input_text","text":"`)
+		_, _ = b.WriteString(p[1])
+		_, _ = b.WriteString(`"}]}`)
 	}
-	b.WriteString(`]}`)
+	_, _ = b.WriteString(`]}`)
 	return b.Bytes()
 }
 
@@ -94,7 +94,7 @@ func TestPromptTextHelpersMatchLegacy(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		var b strings.Builder
 		for n := rng.Intn(40); n > 0; n-- {
-			b.WriteString(alphabet[rng.Intn(len(alphabet))])
+			_, _ = b.WriteString(alphabet[rng.Intn(len(alphabet))])
 		}
 		s := b.String()
 		for _, limit := range []int{0, 1, 2, 3, 5, 17} {

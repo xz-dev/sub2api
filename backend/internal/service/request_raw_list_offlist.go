@@ -102,8 +102,8 @@ func rawReasonName(s string) string {
 	}
 	b := []byte(s)
 	for i, ch := range b {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
-			ch == '_' || ch == '.' || ch == ':' || ch == '/' || ch == '-') {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') &&
+			ch != '_' && ch != '.' && ch != ':' && ch != '/' && ch != '-' {
 			b[i] = '_'
 		}
 	}

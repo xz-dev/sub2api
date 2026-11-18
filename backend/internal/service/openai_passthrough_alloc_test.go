@@ -19,14 +19,14 @@ import (
 // (they took about 30 x, 7 x and 5 x).
 func TestPassthroughNormalizersAllocateLittleWhenUnchanged(t *testing.T) {
 	var b bytes.Buffer
-	b.WriteString(`{"model":"m","store":false,"input":[`)
+	_, _ = b.WriteString(`{"model":"m","store":false,"input":[`)
 	for i := 0; b.Len() < 4<<20; i++ {
 		if i > 0 {
-			b.WriteByte(',')
+			_ = b.WriteByte(',')
 		}
-		b.WriteString(`{"role":"user","content":"m` + strconv.Itoa(i) + `"}`)
+		_, _ = b.WriteString(`{"role":"user","content":"m` + strconv.Itoa(i) + `"}`)
 	}
-	b.WriteString(`]}`)
+	_, _ = b.WriteString(`]}`)
 	body := b.Bytes()
 	for name, f := range map[string]func() (bool, error){
 		"compaction_trigger": func() (bool, error) { _, c, err := NormalizeCompactionTriggerInputOrder(body); return c, err },

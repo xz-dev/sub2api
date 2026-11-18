@@ -50,7 +50,7 @@ func TestLeaseHoldsSharedLock(t *testing.T) {
 
 	w, err := os.Open(p)
 	require.NoError(t, err)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	require.ErrorIs(t, unix.Flock(int(w.Fd()), unix.LOCK_EX|unix.LOCK_NB), unix.EWOULDBLOCK)
 	l2, err := AcquireLease(dir, testTicket) // shared: several hops lease at once
 	require.NoError(t, err)

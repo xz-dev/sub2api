@@ -21,7 +21,7 @@ func TestOpenDirRefusesTmpfs(t *testing.T) {
 	}
 	p, err := os.MkdirTemp("/dev/shm", "bodyspool-")
 	require.NoError(t, err)
-	defer os.RemoveAll(p)
+	defer func() { _ = os.RemoveAll(p) }()
 	require.NoError(t, os.Chmod(p, 0o700))
 	_, err = OpenDir(p, 1)
 	require.ErrorContains(t, err, "memory-backed")
@@ -68,7 +68,7 @@ func TestDiskFloorRefusesWrite(t *testing.T) {
 	require.NoError(t, err)
 	f, err := d.Create()
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = f.Write([]byte("x"))
 	require.ErrorIs(t, err, ErrInsufficientStorage)
 	require.Zero(t, f.Size(), "a refused write never falls back to memory or partial bytes")
@@ -79,7 +79,7 @@ func residentPages(t *testing.T, f *File, size int64) int {
 	t.Helper()
 	m, err := unix.Mmap(int(f.f.Fd()), 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
 	require.NoError(t, err)
-	defer unix.Munmap(m)
+	defer func() { _ = unix.Munmap(m) }()
 	vec := make([]byte, (size+int64(os.Getpagesize())-1)/int64(os.Getpagesize()))
 	_, _, errno := unix.Syscall(unix.SYS_MINCORE, uintptr(unsafe.Pointer(&m[0])), uintptr(len(m)), uintptr(unsafe.Pointer(&vec[0])))
 	require.Zero(t, errno)
@@ -101,7 +101,7 @@ func TestPageCacheBounded(t *testing.T) {
 	}
 	f, err := d.Create()
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	chunk := bytes.Repeat([]byte("z"), 256<<10)
 	const total = 64 << 20
 	for i := 0; i < total/len(chunk); i++ {
@@ -122,7 +122,7 @@ func TestSectionReadsExactRange(t *testing.T) {
 	d := testDir(t)
 	f, err := d.Create()
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = f.Write([]byte("0123456789"))
 	require.NoError(t, err)
 	b, err := io.ReadAll(f.Section(3, 4))

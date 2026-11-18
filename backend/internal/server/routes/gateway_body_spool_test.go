@@ -135,7 +135,8 @@ func TestGatewayRoutesUnconvertedGeminiAndAntigravityRefuseAboveL(t *testing.T) 
 					require.Equal(t, http.StatusRequestEntityTooLarge, probe.Code, probe.Body.String())
 					var refusal map[string]map[string]any
 					require.NoError(t, json.Unmarshal(probe.Body.Bytes(), &refusal))
-					limit = int64(refusal["error"]["limit_bytes"].(float64))
+					limitBytes, _ := refusal["error"]["limit_bytes"].(float64)
+					limit = int64(limitBytes)
 					require.Less(t, limit, L, "the unmeasured class limit is below L")
 					require.Contains(t, refusal["error"]["message"], "its limit is "+strconv.FormatInt(limit, 10)+" bytes")
 				}
@@ -151,7 +152,8 @@ func TestGatewayRoutesUnconvertedGeminiAndAntigravityRefuseAboveL(t *testing.T) 
 				var got, exp map[string]map[string]any
 				require.NoError(t, json.Unmarshal(over.Body.Bytes(), &got))
 				require.NoError(t, json.Unmarshal(want.Body.Bytes(), &exp))
-				msg := strings.Replace(exp["error"]["message"].(string), refPath, rt.path, 1)
+				expMsg, _ := exp["error"]["message"].(string)
+				msg := strings.Replace(expMsg, refPath, rt.path, 1)
 				if limit != L { // only the limit and size numbers differ
 					msg = strings.Replace(msg, strconv.FormatInt(L+1, 10), strconv.FormatInt(limit+1, 10), 1)
 					msg = strings.Replace(msg, strconv.FormatInt(L, 10), strconv.FormatInt(limit, 10), 1)

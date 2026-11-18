@@ -116,16 +116,16 @@ func OpenMeter(dir string) (*Meter, error) {
 			return nil, errors.New("bodyspool: no cgroup v2 membership for the memory charge")
 		}
 	}
-	mx, err := os.Open(filepath.Join(dir, "memory.max"))
+	mx, err := os.Open(filepath.Join(dir, "memory.max")) //nolint:gosec // G703: dir 来自 /proc/self/cgroup 或配置的 cgroup 目录，文件名硬编码，非请求输入
 	if err != nil {
 		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
 	}
-	cur, err := os.Open(filepath.Join(dir, "memory.current"))
+	cur, err := os.Open(filepath.Join(dir, "memory.current")) //nolint:gosec // G703: dir 来自 /proc/self/cgroup 或配置的 cgroup 目录，文件名硬编码，非请求输入
 	if err != nil {
 		_ = mx.Close()
 		return nil, fmt.Errorf("bodyspool: memory charge: %w", err)
 	}
-	stat, err := os.Open(filepath.Join(dir, "memory.stat"))
+	stat, err := os.Open(filepath.Join(dir, "memory.stat")) //nolint:gosec // G703: dir 来自 /proc/self/cgroup 或配置的 cgroup 目录，文件名硬编码，非请求输入
 	if err != nil {
 		_ = mx.Close()
 		_ = cur.Close()
@@ -389,15 +389,19 @@ var sharedMeters sync.Map // cgroup dir -> *Meter
 // each would admit up to the whole headroom. It is never closed.
 func SharedMeter(dir string) (*Meter, error) {
 	if v, ok := sharedMeters.Load(dir); ok {
-		return v.(*Meter), nil
+		if m, ok := v.(*Meter); ok {
+			return m, nil
+		}
 	}
 	m, err := OpenMeter(dir)
 	if err != nil {
 		return nil, err
 	}
 	if v, loaded := sharedMeters.LoadOrStore(dir, m); loaded {
-		m.Close()
-		return v.(*Meter), nil
+		if shared, ok := v.(*Meter); ok {
+			m.Close()
+			return shared, nil
+		}
 	}
 	return m, nil
 }
