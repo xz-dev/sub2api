@@ -23,6 +23,14 @@ var openAIResponsesInstructionsFieldMarker = []byte(`"instructions"`)
 type openAIResponsesClientInstructions struct {
 	// raw 是客户端 instructions 压缩成单行后的 JSON；未传时为空串。
 	// 单行保证还原值写回 SSE data 行时不会拆帧。
+	//
+	// A string value (no insignificant whitespace, newlines escaped) is a
+	// read-only view of the client body, not a copy: the instructions of a
+	// large request can be most of its body, and a copy, a compacted copy
+	// and its buffer were each charged nowhere (capacity: total allocation
+	// within the k_skel charge on the verified-raw path). The view is only
+	// read by syncOpenAIResponsesInstructionsEcho within the same attempt;
+	// a restore value is cloned before it is kept.
 	raw string
 }
 
@@ -33,8 +41,12 @@ func rememberOpenAIResponsesClientInstructions(c *gin.Context, body []byte) {
 		return
 	}
 	raw := ""
-	if value := gjson.GetBytes(body, "instructions"); value.Exists() {
-		raw = compactOpenAIResponsesInstructionsRaw(value.Raw)
+	if value := firstRawJSONMember(parseRawJSONView(body), "instructions"); value.Exists() {
+		if value.Type == gjson.String {
+			raw = value.Raw
+		} else {
+			raw = compactOpenAIResponsesInstructionsRaw(value.Raw)
+		}
 	}
 	c.Set(openAIResponsesClientInstructionsKey, openAIResponsesClientInstructions{raw: raw})
 	c.Set(openAIResponsesInstructionsEchoRestoreKey, "")
@@ -55,12 +67,12 @@ func syncOpenAIResponsesInstructionsEcho(c *gin.Context, upstreamBody []byte) {
 		return
 	}
 	upstreamRaw := ""
-	if value := gjson.GetBytes(upstreamBody, "instructions"); value.Exists() {
+	if value := firstRawJSONMember(parseRawJSONView(upstreamBody), "instructions"); value.Exists() {
 		upstreamRaw = value.Raw
 	}
 	restore := ""
 	if !openAIResponsesInstructionsRawEqual(client.raw, upstreamRaw) {
-		restore = client.raw
+		restore = strings.Clone(client.raw)
 		if restore == "" {
 			restore = "null"
 		}
@@ -83,6 +95,12 @@ func openAIResponsesInstructionsRawEqual(left, right string) bool {
 		return true
 	}
 	if left == "" || right == "" {
+		return false
+	}
+	// Parsing a string unescapes (copies) it. Past 32 KiB, values that differ
+	// byte-wise count as different: the restore then writes the client's own
+	// value back, which is the same echo.
+	if len(left) > contentSeedDecodeMaxBytes || len(right) > contentSeedDecodeMaxBytes {
 		return false
 	}
 	l := gjson.Parse(left)

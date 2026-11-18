@@ -41,7 +41,7 @@ func TestOpenAICompatAnthropicDigestLongestPrefix(t *testing.T) {
 		openAICompatAnthropicDigestBinding{PromptCacheKey: "old", ExpiresAt: time.Now().Add(-time.Second)})
 	key, _ = s.findOpenAICompatAnthropicDigestPromptCacheKey(account, 1, "s:a-u:b-a:q")
 	require.Equal(t, "k-short", key)
-	_, ok := s.openaiCompatAnthropicDigestSessions.Load(openAICompatAnthropicDigestNamespace(account, 1)+"s:a-u:b-a:q")
+	_, ok := s.openaiCompatAnthropicDigestSessions.Load(openAICompatAnthropicDigestNamespace(account, 1) + "s:a-u:b-a:q")
 	require.False(t, ok)
 }
 
