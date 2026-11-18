@@ -757,6 +757,7 @@ var rawDecisiveAccountReads = map[string]rawAccountFlag{
 	"Extra->codexFingerprintSeed":               {rawAnyValue, "any: Codex OAuth and passthrough paths only"},
 	"GetChatGPTAccountID":                       {rawAnyValue, "any: Codex OAuth identity only"},
 	"GetCredential(chatgpt_user_id)":            {rawAnyValue, "any: Codex OAuth identity only"},
+	"GetUpstreamModelMetadata":                  {rawAnyValue, "any: GPT-6.2 group-forced ultrafast tier, read only on Codex OAuth accounts (IsOpenAIOAuthLike)"},
 	"GetMappedModel":                            {rawAnyValue, "any: one raw sjson set of model (gen_account_model_mapping)"},
 	"ResolveCompactMappedModel":                 {rawAnyValue, "any: compact model, one raw set (gen_account_model_mapping)"},
 	"GetCredential(base_url)":                   {rawAnyValue, "any: decides one raw sjson delete of reasoning.effort none (gen_account_base_url)"},
