@@ -138,6 +138,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, respBody, false); policyErr != nil {
+			return nil, policyErr
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}

@@ -388,6 +388,11 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
 			return nil, s.writeOpenAIRequestScopedPassthroughError(c, resp, respBody)
 		}
+		// A recognized content-policy rejection is request-scoped: decide it
+		// before any same-account retry, failover or account side effect.
+		if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, s.redactAgentIdentitySensitiveBody(ctx, account, respBody), true); policyErr != nil {
+			return nil, policyErr
+		}
 		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := account.GetCredential("task_id")
 			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {

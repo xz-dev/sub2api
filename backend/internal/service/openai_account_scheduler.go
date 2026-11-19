@@ -2559,6 +2559,11 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(account *Accoun
 	if account == nil {
 		return false
 	}
+	// A content-policy rejection describes the request, not the account:
+	// record neither a health failure nor a scheduler error sample.
+	if !success && len(observedErr) > 0 && IsOpenAIUpstreamPolicyError(observedErr[0]) {
+		return false
+	}
 	accountID := account.ID
 	healthTripped := false
 	if s != nil && s.rateLimitService != nil {

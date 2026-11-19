@@ -401,6 +401,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				}
 				continue
 			}
+			// A recognized content-policy rejection is request-scoped: decide it
+			// before any same-account retry, failover or account side effect.
+			if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, s.redactAgentIdentitySensitiveBody(ctx, account, probeBody), false); policyErr != nil {
+				return nil, policyErr
+			}
 			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(probeBody)))
 			if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
 				c, account, requestedModel, body, resp.StatusCode, upstreamMsg, probeBody, compactModelFallbackRetried,
@@ -743,6 +748,9 @@ func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, r
 	if hit, _, _ := detectOpenAICyberPolicy(responseBody); hit {
 		return false
 	}
+	if _, policy := classifyOpenAIUpstreamPolicyError(account, statusCode, responseBody); policy {
+		return false
+	}
 	if isOpenAIContextWindowError("", responseBody) {
 		return false
 	}
@@ -908,6 +916,9 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	body := s.redactAgentIdentitySensitiveBody(ctx, account, responseBody)
 	if isOpenAIRequestScopedPassthroughError(resp.StatusCode, body) {
 		return s.writeOpenAIRequestScopedPassthroughError(c, resp, body)
+	}
+	if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, body, false); policyErr != nil {
+		return policyErr
 	}
 	MarkResponseCommitted(c)
 

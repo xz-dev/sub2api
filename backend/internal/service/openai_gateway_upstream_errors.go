@@ -651,6 +651,9 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		})
 		return nil, fmt.Errorf("grok content policy rejection: %s", clientMsg)
 	}
+	if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, body, false); policyErr != nil {
+		return nil, policyErr
+	}
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)

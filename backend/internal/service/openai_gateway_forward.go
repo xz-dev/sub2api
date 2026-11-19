@@ -1219,6 +1219,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			// A recognized content-policy rejection is request-scoped: decide it
+			// before any same-account retry, failover or account side effect.
+			if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, respBody, false); policyErr != nil {
+				return nil, policyErr
+			}
 			invalidEncryptedContentError := upstreamCode == "invalid_encrypted_content" ||
 				(upstreamCode == "thinking_signature_invalid" &&
 					strings.Contains(upstreamMsg, "The encrypted content") &&
