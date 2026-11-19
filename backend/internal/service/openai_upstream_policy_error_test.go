@@ -115,39 +115,100 @@ func TestWriteOpenAIUpstreamPolicyRejectionIgnoresNonPolicy(t *testing.T) {
 	require.Equal(t, 0, rec.Body.Len())
 }
 
-// After the compact keepalive committed HTTP 200, the Responses terminal event
-// carries the policy code; the committed status is not rewritten.
-func TestWriteOpenAIUpstreamPolicyRejectionAfterResponsesKeepaliveCommit(t *testing.T) {
-	c, rec := newCompactBridgeTestContext(t, true)
-	stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
-	defer stop()
-	waitForKeepaliveBeats()
-
-	writeOpenAIUpstreamPolicyRejection(c, &OpenAIUpstreamPolicyError{StatusCode: 403, Code: "content_filter", Type: "permission_error"}, false)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
-	require.Len(t, events, 1)
-	require.Equal(t, "response.failed", events[0][0])
-	require.Equal(t, "failed", gjson.Get(events[0][1], "response.status").String())
-	requirePolicyErrorObject(t, gjson.Get(events[0][1], "response.error").Raw, "content_filter")
+var committedPolicyCases = []OpenAIUpstreamPolicyError{
+	{StatusCode: 403, Code: "content_policy_violation", Type: "permission_error"},
+	{StatusCode: 400, Code: "content_filter", Type: "invalid_request_error"},
+	{StatusCode: 400, Code: "content_moderation", Type: "content_moderation"},
+	{StatusCode: 403, Code: "content_filter", Type: "content_policy"},
 }
 
-// A committed Chat Completions stream terminates with the Chat SSE error frame.
+func requireCommittedPolicyError(t *testing.T, raw string, want OpenAIUpstreamPolicyError) {
+	t.Helper()
+	require.Equal(t, want.Type, gjson.Get(raw, "type").String(), "exact safe type must survive the committed stream")
+	require.Equal(t, want.Code, gjson.Get(raw, "code").String())
+	require.Equal(t, OpenAIUpstreamPolicyMessage, gjson.Get(raw, "message").String())
+}
+
+// After the compact keepalive committed HTTP 200, the Responses terminal event
+// carries the exact policy code/type; the committed status is not rewritten.
+func TestWriteOpenAIUpstreamPolicyRejectionAfterResponsesKeepaliveCommit(t *testing.T) {
+	for _, tc := range committedPolicyCases {
+		t.Run(tc.Code+"/"+tc.Type, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, true)
+			stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
+			defer stop()
+			waitForKeepaliveBeats()
+
+			policyErr := tc
+			writeOpenAIUpstreamPolicyRejection(c, &policyErr, false)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
+			require.Len(t, events, 1, "exactly one terminal error event")
+			require.Equal(t, "response.failed", events[0][0])
+			require.Equal(t, "failed", gjson.Get(events[0][1], "response.status").String())
+			requireCommittedPolicyError(t, gjson.Get(events[0][1], "response.error").Raw, tc)
+		})
+	}
+}
+
+// An already-written Responses SSE stream (no keepalive) also terminates with
+// response.failed carrying the exact policy type.
+func TestWriteOpenAIUpstreamPolicyRejectionAfterResponsesStreamCommit(t *testing.T) {
+	for _, tc := range committedPolicyCases {
+		t.Run(tc.Code+"/"+tc.Type, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			c.Writer.Header().Set("Content-Type", "text/event-stream")
+			c.Writer.WriteHeader(http.StatusOK)
+			_, _ = c.Writer.Write([]byte(": committed\n\n"))
+
+			policyErr := tc
+			writeOpenAIUpstreamPolicyRejection(c, &policyErr, false)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
+			require.Len(t, events, 1, "exactly one terminal error event")
+			require.Equal(t, "response.failed", events[0][0])
+			requireCommittedPolicyError(t, gjson.Get(events[0][1], "response.error").Raw, tc)
+		})
+	}
+}
+
+// A committed Chat Completions stream terminates with one Chat SSE error frame
+// carrying the exact policy type; generic invalid_request_error is not accepted.
 func TestWriteOpenAIUpstreamPolicyRejectionAfterChatStreamCommit(t *testing.T) {
-	c, rec := newCompactBridgeTestContext(t, false)
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write([]byte("data: {\"choices\":[]}\n\n"))
+	for _, tc := range committedPolicyCases {
+		t.Run(tc.Code+"/"+tc.Type, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			c.Writer.Header().Set("Content-Type", "text/event-stream")
+			c.Writer.WriteHeader(http.StatusOK)
+			_, _ = c.Writer.Write([]byte("data: {\"choices\":[]}\n\n"))
 
-	writeOpenAIUpstreamPolicyRejection(c, &OpenAIUpstreamPolicyError{StatusCode: 400, Code: "content_moderation", Type: "content_moderation"}, true)
+			policyErr := tc
+			writeOpenAIUpstreamPolicyRejection(c, &policyErr, true)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	frames := strings.Split(strings.TrimSpace(rec.Body.String()), "\n\n")
-	require.Len(t, frames, 2)
-	last := strings.TrimPrefix(frames[1], "data: ")
-	requirePolicyErrorObject(t, gjson.Get(last, "error").Raw, "content_moderation")
-	require.Equal(t, "invalid_request_error", gjson.Get(last, "error.type").String())
+			require.Equal(t, http.StatusOK, rec.Code)
+			frames := strings.Split(strings.TrimSpace(rec.Body.String()), "\n\n")
+			require.Len(t, frames, 2, "exactly one terminal error frame after the committed chunk")
+			require.Equal(t, 1, strings.Count(rec.Body.String(), `"error"`))
+			last := strings.TrimPrefix(frames[1], "data: ")
+			requireCommittedPolicyError(t, gjson.Get(last, "error").Raw, tc)
+		})
+	}
+}
+
+// Other callers of the shared terminal helpers keep their defaults.
+func TestStreamTerminalHelpersKeepDefaultsForOtherCallers(t *testing.T) {
+	frame := strings.TrimPrefix(strings.TrimSpace(buildChatStreamErrorSSE("cyber_policy", "blocked")), "data: ")
+	require.Equal(t, "invalid_request_error", gjson.Get(frame, "error.type").String())
+	require.Equal(t, "cyber_policy", gjson.Get(frame, "error.code").String())
+
+	c, rec := newCompactBridgeTestContext(t, true)
+	writeOpenAICompactSSEFailureMessage(c, http.StatusBadGateway, "upstream_error", "failed")
+	events := parseCompactBridgeSSE(t, rec.Body.String())
+	require.Len(t, events, 1)
+	require.Equal(t, "upstream_error", gjson.Get(events[0][1], "response.error.code").String())
+	require.False(t, gjson.Get(events[0][1], "response.error.type").Exists(), "existing callers emit no type field")
 }
 
 func TestReportOpenAIAccountScheduleResultIgnoresPolicyRejection(t *testing.T) {

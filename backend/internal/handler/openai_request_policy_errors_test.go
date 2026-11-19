@@ -220,3 +220,46 @@ func TestOpenAIPolicyClassifierLeavesNonPolicy403Unchanged(t *testing.T) {
 		}
 	}
 }
+
+// A structured policy code wins over a message that also matches the
+// rejected-field compatibility retry: one attempt, no field-stripping replay.
+func TestOpenAIResponsesPolicyRejectionPrecedesRejectedFieldRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const conflictBody = `{"error":{"type":"permission_error","code":"content_policy_violation","param":"max_output_tokens","message":"Unsupported parameter: 'max_output_tokens'"}}`
+	requestBody := []byte(`{"model":"gpt-5.2","input":"synthetic","max_output_tokens":16,"stream":false}`)
+	for _, accountType := range []string{"oauth", "apikey", "apikey_passthrough", "apikey_chat"} {
+		t.Run(accountType, func(t *testing.T) {
+			upstream := &scriptedErrorUpstream{
+				status: http.StatusBadRequest,
+				header: http.Header{"Content-Type": []string{"application/json"}},
+				body:   conflictBody,
+			}
+			h, repo := newPolicyTestHandler(t, upstream, policyTestAccounts(accountType, http.StatusBadRequest))
+			c, rec := newLargeBodyTestContext("/v1/responses", requestBody, "")
+			h.Responses(c)
+			require.Equal(t, int32(1), upstream.calls.Load(), "structured policy must win before message-based field retry")
+			require.Zero(t, repo.mutations.Load(), "no account health, cooldown or disable side effect")
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "content_policy_violation", gjson.Get(rec.Body.String(), "error.code").String())
+			require.Equal(t, "permission_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.Equal(t, policyFixedMessage, gjson.Get(rec.Body.String(), "error.message").String())
+			require.NotContains(t, rec.Body.String(), "Unsupported parameter")
+		})
+	}
+}
+
+// Control: without a policy code the same message keeps the existing
+// rejected-field retry on the passthrough path.
+func TestOpenAIResponsesNonPolicyRejectedFieldRetryUnchanged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &scriptedErrorUpstream{
+		status: http.StatusBadRequest,
+		header: http.Header{"Content-Type": []string{"application/json"}},
+		body:   `{"error":{"type":"invalid_request_error","code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: 'max_output_tokens'"}}`,
+	}
+	h, _ := newPolicyTestHandler(t, upstream, largeBodyTestAccounts("apikey_passthrough"))
+	c, rec := newLargeBodyTestContext("/v1/responses", []byte(`{"model":"gpt-5.2","input":"synthetic","max_output_tokens":16,"stream":false}`), "")
+	h.Responses(c)
+	require.GreaterOrEqual(t, upstream.calls.Load(), int32(2), "non-policy rejected field keeps its compatibility retry")
+	require.NotEqual(t, policyFixedMessage, gjson.Get(rec.Body.String(), "error.message").String())
+}

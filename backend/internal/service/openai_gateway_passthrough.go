@@ -386,6 +386,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			probeBody := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(probeBody))
+			// A recognized content-policy rejection is request-scoped: decide it
+			// from structured fields before any message-based field retry, task
+			// recovery, compact fallback, failover or account side effect.
+			if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, s.redactAgentIdentitySensitiveBody(ctx, account, probeBody), false); policyErr != nil {
+				return nil, policyErr
+			}
 			if retryBody, reason, changed, retryErr := normalizeOpenAIResponsesRejectedFieldRetryBody(resp.StatusCode, body, probeBody); retryErr != nil {
 				return nil, fmt.Errorf("normalize passthrough rejected Responses field retry body: %w", retryErr)
 			} else if changed && rejectedFieldRetryState.Allow(retryBody) {
@@ -400,11 +406,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
 				}
 				continue
-			}
-			// A recognized content-policy rejection is request-scoped: decide it
-			// before any same-account retry, failover or account side effect.
-			if policyErr := s.writeOpenAIUpstreamPolicyRejectionIfRecognized(c, account, resp.StatusCode, s.redactAgentIdentitySensitiveBody(ctx, account, probeBody), false); policyErr != nil {
-				return nil, policyErr
 			}
 			upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(probeBody)))
 			if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(

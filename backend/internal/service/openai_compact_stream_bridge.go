@@ -109,10 +109,23 @@ func writeOpenAICompactSSEFailure(c *gin.Context, statusCode int, errorBody []by
 // 不被识别，会退化为 "stream closed before response.completed" 盲重连）。
 // 同时标记流内错误，保证挂在 200 流上的失败仍进入 ops 错误看板。
 func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType, message string) {
+	writeOpenAICompactSSEFailureMessageWithType(c, statusCode, errType, "", message)
+}
+
+// writeOpenAICompactSSEFailureMessageWithType is writeOpenAICompactSSEFailureMessage
+// that also carries response.error.type when errorType is non-empty.
+func writeOpenAICompactSSEFailureMessageWithType(c *gin.Context, statusCode int, errType, errorType, message string) {
 	if c == nil {
 		return
 	}
 	MarkOpsStreamError(c, errType, message, statusCode)
+	errorObject := map[string]any{
+		"code":    errType,
+		"message": message,
+	}
+	if errorType != "" {
+		errorObject["type"] = errorType
+	}
 	payload, err := json.Marshal(map[string]any{
 		"type":            "response.failed",
 		"sequence_number": 0,
@@ -124,10 +137,7 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 			"created_at": time.Now().Unix(),
 			"status":     "failed",
 			"output":     []any{},
-			"error": map[string]any{
-				"code":    errType,
-				"message": message,
-			},
+			"error":      errorObject,
 		},
 	})
 	if err != nil {

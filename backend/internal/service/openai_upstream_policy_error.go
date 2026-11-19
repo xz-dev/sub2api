@@ -156,12 +156,12 @@ func writeOpenAIUpstreamPolicyRejection(c *gin.Context, policyErr *OpenAIUpstrea
 	if keepaliveCommitted || streamCommitted {
 		if chatCompletions {
 			MarkOpsStreamError(c, policyErr.Type, OpenAIUpstreamPolicyMessage, policyErr.StatusCode)
-			if _, err := fmt.Fprint(c.Writer, buildChatStreamErrorSSE(policyErr.Code, OpenAIUpstreamPolicyMessage)); err == nil {
+			if _, err := fmt.Fprint(c.Writer, buildChatStreamErrorSSEWithType(policyErr.Type, policyErr.Code, OpenAIUpstreamPolicyMessage)); err == nil {
 				c.Writer.Flush()
 			}
 			return
 		}
-		writeOpenAICompactSSEFailureMessage(c, policyErr.StatusCode, policyErr.Code, OpenAIUpstreamPolicyMessage)
+		writeOpenAICompactSSEFailureMessageWithType(c, policyErr.StatusCode, policyErr.Code, policyErr.Type, OpenAIUpstreamPolicyMessage)
 		return
 	}
 	MarkResponseCommitted(c)
