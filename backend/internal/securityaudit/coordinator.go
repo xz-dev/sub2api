@@ -13,6 +13,8 @@ type LegacyEngine interface {
 
 type PromptEngine interface {
 	EffectiveMode() Mode
+	// Enqueue borrows req read-only for this call; implementations must copy
+	// any request memory retained after returning.
 	Enqueue(ctx context.Context, req Request) error
 	Evaluate(ctx context.Context, req Request) (*PromptDecision, error)
 }

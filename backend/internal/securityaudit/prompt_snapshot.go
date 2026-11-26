@@ -209,16 +209,29 @@ func buildPrioritizedScanText(segments promptPieces, priority int) string {
 }
 
 func RedactPreview(value string, maxRunes int) string {
-	value = bearerPattern.ReplaceAllString(value, "Bearer ***")
-	value = apiKeyPattern.ReplaceAllStringFunc(value, func(match string) string {
-		if index := strings.IndexAny(match, ":= \t"); index >= 0 {
-			return match[:index+1] + "***"
-		}
-		return "***"
-	})
-	value = canaryPattern.ReplaceAllString(value, "${1}***")
-	value = emailPattern.ReplaceAllString(value, "***@***")
-	value = phonePattern.ReplaceAllString(value, "***PHONE***")
+	// ReplaceAllString copies even an unchanged input. Most prompts do not
+	// match these patterns, so avoid ten full-text allocations just to build a
+	// short preview. Preserve the replacement order and complete-input matching.
+	if bearerPattern.MatchString(value) {
+		value = bearerPattern.ReplaceAllString(value, "Bearer ***")
+	}
+	if apiKeyPattern.MatchString(value) {
+		value = apiKeyPattern.ReplaceAllStringFunc(value, func(match string) string {
+			if index := strings.IndexAny(match, ":= \t"); index >= 0 {
+				return match[:index+1] + "***"
+			}
+			return "***"
+		})
+	}
+	if canaryPattern.MatchString(value) {
+		value = canaryPattern.ReplaceAllString(value, "${1}***")
+	}
+	if emailPattern.MatchString(value) {
+		value = emailPattern.ReplaceAllString(value, "***@***")
+	}
+	if phonePattern.MatchString(value) {
+		value = phonePattern.ReplaceAllString(value, "***PHONE***")
+	}
 	return TrimRunes(value, maxRunes)
 }
 

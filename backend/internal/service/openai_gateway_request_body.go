@@ -1209,9 +1209,11 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 
 	view := openAIRequestView{body: body}
 	var seen uint8
-	// parseRawJSONView reads body without copying; view keeps body alive for extracted strings.
-	// Raw members (rr10): Result.ForEach unescaped every root string,
-	// input and instructions included; only the fields read are unescaped.
+	// Raw members avoid decoding unrelated root strings such as instructions.
+	// Clone selected strings because usage logs and async work outlive the body.
+	field := func(value gjson.Result) string {
+		return strings.Clone(strings.TrimSpace(value.String()))
+	}
 	forEachRawJSONMember(parseRawJSONView(body), func(key, value gjson.Result) bool {
 		if value.Type == gjson.String {
 			switch key.Str {
@@ -1222,7 +1224,7 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 		switch key.Str {
 		case "model":
 			if seen&modelField == 0 {
-				view.Model = strings.TrimSpace(value.String())
+				view.Model = field(value)
 				seen |= modelField
 			}
 		case "stream":
@@ -1232,22 +1234,22 @@ func newOpenAIRequestView(body []byte) openAIRequestView {
 			}
 		case "prompt_cache_key":
 			if seen&promptCacheKeyField == 0 {
-				view.PromptCacheKey = strings.TrimSpace(value.String())
+				view.PromptCacheKey = field(value)
 				seen |= promptCacheKeyField
 			}
 		case "previous_response_id":
 			if seen&previousResponseIDField == 0 {
-				view.PreviousResponseID = strings.TrimSpace(value.String())
+				view.PreviousResponseID = field(value)
 				seen |= previousResponseIDField
 			}
 		case "service_tier":
 			if seen&serviceTierField == 0 {
-				view.ServiceTier = strings.TrimSpace(value.String())
+				view.ServiceTier = field(value)
 				seen |= serviceTierField
 			}
 		case "reasoning":
 			if seen&reasoningField == 0 {
-				view.ReasoningEffort = strings.TrimSpace(value.Get("effort").String())
+				view.ReasoningEffort = field(value.Get("effort"))
 				seen |= reasoningField
 			}
 		}
@@ -2056,7 +2058,34 @@ func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string
 	return &value
 }
 
+const responsesConfigurationUpdate = "configuration_update"
+
+// Responses clients can keep the top-level effort fixed for prompt caching.
+// Each input update takes effect from its position until another sets effort.
+func latestResponsesInputEffort(body []byte) string {
+	if !bytes.Contains(body, []byte(responsesConfigurationUpdate)) && !JSONMayEscapePlainASCII(body) {
+		return ""
+	}
+	input := parseRawJSONView(body).Get("input")
+	if !input.IsArray() {
+		return ""
+	}
+	var latest string
+	input.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").Str == responsesConfigurationUpdate {
+			if effort := strings.TrimSpace(item.Get("reasoning.effort").Str); effort != "" {
+				latest = effort
+			}
+		}
+		return true
+	})
+	return latest
+}
+
 func explicitRequestedReasoningEffortFromBody(body []byte) string {
+	if latest := latestResponsesInputEffort(body); latest != "" {
+		return latest
+	}
 	raw := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if raw == "" {
 		raw = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
@@ -2073,11 +2102,7 @@ func explicitRequestedReasoningEffortFromBody(body []byte) string {
 // later persist "xhigh".
 func CanonicalRequestedReasoningEffort(body []byte, modelCandidates ...string) *string {
 	if raw := explicitRequestedReasoningEffortFromBody(body); raw != "" {
-		canonical := NormalizeMaxReasoningEffort(raw)
-		if canonical == "" {
-			return nil
-		}
-		return &canonical
+		return optionalTrimmedStringPtr(normalizeReasoningEffortMappingSource(raw))
 	}
 	for _, model := range modelCandidates {
 		if value := canonicalReasoningEffortFromModelSuffix(model); value != "" {
@@ -2389,8 +2414,11 @@ func openAIGroupForcedServiceTier(ctx context.Context, account *Account, model s
 		return ""
 	}
 	if group.ForceOpenAIUltrafast && openAIModelSupportsUltrafast(model) {
-		// GPT-6.2 API support does not establish subscription entitlement.
+		// Resolve the published Pro entitlement first, then account-specific grants.
 		if base := openai.GPT62ModelID(model); base != "" && account.IsOpenAIOAuthLike() {
+			if gpt62PlanIncludesUltrafast(account, base) {
+				return OpenAIFastTierUltrafast
+			}
 			metadata, ok := account.GetUpstreamModelMetadata(base)
 			if ok && gjson.GetBytes(metadata.CodexToolCapabilities["service_tiers"], `#(id=="ultrafast")`).Exists() {
 				return OpenAIFastTierUltrafast
@@ -2891,12 +2919,19 @@ func CanonicalRequestedReasoningEffortFromReqBody(reqBody map[string]any, modelC
 			raw = strings.TrimSpace(effort)
 		}
 	}
-	if raw != "" {
-		canonical := NormalizeMaxReasoningEffort(raw)
-		if canonical == "" {
-			return nil
+	items, _ := reqBody["input"].([]any)
+	for i := len(items) - 1; i >= 0; i-- {
+		item, _ := items[i].(map[string]any)
+		if item["type"] == responsesConfigurationUpdate {
+			reasoning, _ := item["reasoning"].(map[string]any)
+			if effort, _ := reasoning["effort"].(string); strings.TrimSpace(effort) != "" {
+				raw = effort
+				break
+			}
 		}
-		return &canonical
+	}
+	if raw != "" {
+		return optionalTrimmedStringPtr(normalizeReasoningEffortMappingSource(raw))
 	}
 	return CanonicalRequestedReasoningEffort(nil, modelCandidates...)
 }

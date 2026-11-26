@@ -112,15 +112,30 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	writeOpenAICompactSSEFailureMessageWithType(c, statusCode, errType, "", message)
 }
 
-// writeOpenAICompactSSEFailureMessageWithType is writeOpenAICompactSSEFailureMessage
-// that also carries response.error.type when errorType is non-empty.
+// writeOpenAICompactSSEFailureMessageWithType also includes the structured error type.
 func writeOpenAICompactSSEFailureMessageWithType(c *gin.Context, statusCode int, errType, errorType, message string) {
+	writeOpenAICompactSSEFailureEvent(c, statusCode, errType, errType, errorType, message)
+}
+
+// writeOpenAICompactSSEFailureWithCode preserves a deterministic upstream error
+// code while keeping upstream_error for ops. Capacity errors remain retryable.
+func writeOpenAICompactSSEFailureWithCode(c *gin.Context, statusCode int, code, message string) {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "":
+		code = "upstream_error"
+	case "server_is_overloaded", "slow_down":
+		code = openAICapacityShedRetryableClientCode
+	}
+	writeOpenAICompactSSEFailureEvent(c, statusCode, "upstream_error", code, "", message)
+}
+
+func writeOpenAICompactSSEFailureEvent(c *gin.Context, statusCode int, opsErrType, code, errorType, message string) {
 	if c == nil {
 		return
 	}
-	MarkOpsStreamError(c, errType, message, statusCode)
+	MarkOpsStreamError(c, opsErrType, message, statusCode)
 	errorObject := map[string]any{
-		"code":    errType,
+		"code":    code,
 		"message": message,
 	}
 	if errorType != "" {

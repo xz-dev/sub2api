@@ -14,6 +14,11 @@ import (
 
 const openAIResponsesNamespaceNamesContextKey = "openai_responses_namespace_names"
 
+// openAIResponsesNamespaceFieldBytes 是入口预检查用的字面量。带引号可避免匹配到
+// 正文里的普通单词；键写成 unicode 转义时无法字节匹配，那条路径不会进入清理逻辑，
+// 与改动前一致。
+var openAIResponsesNamespaceFieldBytes = []byte(`"namespace"`)
+
 // shouldFlattenOpenAIResponsesNamespaces 判定原生 Responses 转发前是否摊平
 // Codex namespace 工具。
 //
@@ -120,6 +125,7 @@ func hasOpenAIResponsesNamespaceToolDeclaration(body []byte) bool {
 		return found
 	}
 
+	// 与 stripOpenAIResponsesInputNamespaces 同理：input 可能很大，用零拷贝视图取值。
 	root := parseRawJSONView(body)
 	if hasNamespaceTool(firstRawJSONMember(root, "tools")) { // a view: GetBytes copied all of tools (rr10)
 		return true
@@ -163,7 +169,7 @@ func isOpenAIResponsesToolCallItemType(itemType string) bool {
 }
 
 func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, error) {
-	if !bytes.Contains(body, []byte(`"namespace"`)) {
+	if !bytes.Contains(body, openAIResponsesNamespaceFieldBytes) {
 		return body, nil
 	}
 	// A full decode: the k_conv top-up first (review rr5).
@@ -194,11 +200,15 @@ func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, erro
 // untouched. Rebuilding the input array once keeps this linear for long
 // histories and avoids decoding JSON numbers through float64.
 //
+// 读取走 parseRawJSONView（零拷贝 string 视图）而不是 gjson.GetBytes：后者会把
+// input 数组物化成一份拷贝，而这个函数在 Codex 流量上几乎每个请求都会进来
+// （tools 里就有 namespace 声明，入口预检查必然放行），未改动时那份拷贝纯属浪费。
+//
 // keepToolCallNamespaces 保留工具调用项（function_call / custom_tool_call 等）上的
 // namespace，让 Codex 调用能按上游要求原样回传；判定见
 // shouldKeepOpenAIResponsesToolCallNamespaces。
 func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces bool) ([]byte, error) {
-	if !bytes.Contains(body, []byte(`"namespace"`)) {
+	if !bytes.Contains(body, openAIResponsesNamespaceFieldBytes) {
 		return body, nil
 	}
 	// A read-only view, and the result built in one buffer: GetBytes would
@@ -222,7 +232,7 @@ func stripOpenAIResponsesInputNamespaces(body []byte, keepToolCallNamespaces boo
 			(keepToolCallNamespaces && isOpenAIResponsesToolCallItemType(item.Get("type").String())) {
 			return true
 		}
-		itemBody, err := sjson.DeleteBytes([]byte(item.Raw), "namespace")
+		itemBody, err := sjson.Delete(item.Raw, "namespace")
 		if err != nil {
 			stripErr = err
 			return false

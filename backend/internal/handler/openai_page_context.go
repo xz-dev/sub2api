@@ -17,7 +17,10 @@ var codexSelectedPageName = regexp.MustCompile(`^codex_apps_selected_page_part_(
 // A candidate body is decoded in full, so charge (the k_conv top-up) is taken
 // first; the only error returned is a refused charge (written, final).
 func normalizeCodexUntrustedContext(charge func() error, body []byte) ([]byte, bool, error) {
-	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context") {
+	if !mayContainCodexCallOutputCandidate(body,
+		"codex_apps_open_page", "codex_apps_selected_page_part_",
+		"browser_info", "goal_objective", "untrusted_context", "untrusted_content", "ide_context", "proposed_plan",
+	) {
 		return body, false, nil
 	}
 	if err := charge(); err != nil {
@@ -59,13 +62,14 @@ func normalizeCodexUntrustedContextCharged(body []byte) ([]byte, bool) {
 				continue
 			}
 		}
-		name, output := readString("name"), readString("output")
-		if !validCodexUntrustedContext(name, output) {
+		name := readString("name")
+		var output *string
+		if json.Unmarshal(item["output"], &output) != nil || output == nil || !validCodexUntrustedContext(name, *output) {
 			continue
 		}
-		text := "<external_" + name + ">" + output + "</external_" + name + ">"
-		if validCodexPageContext(name, output) {
-			text = "<external_" + name + ">\n" + output + "\n</external_" + name + ">"
+		text := "<external_" + name + ">" + *output + "</external_" + name + ">"
+		if validCodexPageContext(name, *output) {
+			text = "<external_" + name + ">\n" + *output + "\n</external_" + name + ">"
 		}
 		message := map[string]any{
 			"type": "message",
@@ -99,8 +103,14 @@ func normalizeCodexUntrustedContextCharged(body []byte) ([]byte, bool) {
 
 func validCodexUntrustedContext(name, output string) bool {
 	switch name {
-	case "browser_info", "goal_objective", "untrusted_context":
+	case "browser_info", "goal_objective", "untrusted_context", "ide_context":
 		return strings.TrimSpace(output) != ""
+	case "untrusted_content":
+		// Codex's fallback for an unnamed context source can carry any text, including an empty value.
+		return true
+	case "proposed_plan":
+		// Codex splits an approved plan by byte length, so a chunk can be all whitespace.
+		return output != ""
 	default:
 		return validCodexPageContext(name, output)
 	}

@@ -302,7 +302,7 @@ func isOpenAIContextWindowError(upstreamMsg string, upstreamBody []byte) bool {
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 402, 403, 405, 429, 529:
+	case 401, 402, 403, 405, http.StatusRequestTimeout, 429, 529:
 		return true
 	default:
 		return statusCode >= 500
@@ -679,7 +679,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		)
 	}
 
-	if status, errType, errMsg, rule := applyErrorPassthroughRuleWithRule(
+	if status, errType, errMsg, rule, matched := applyErrorPassthroughRuleWithRule(
 		c,
 		PlatformOpenAI,
 		resp.StatusCode,
@@ -687,7 +687,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		http.StatusBadGateway,
 		"upstream_error",
 		"Upstream request failed",
-	); rule != nil {
+	); matched {
 		MarkResponseCommitted(c)
 		if rule.PassthroughBody {
 			writeOpenAIPassthroughRuleBodyError(c, status, body, upstreamMsg, errMsg)
