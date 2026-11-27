@@ -23,6 +23,9 @@ package service
 // listed here, on a listed function without one, and on a gate that does
 // not hold.
 var requestDecodeSites = map[string]string{
+	"service/openai_gateway_buffered_hosted_items.go:openAICompatEventItem":                                                             `not-request: buffered upstream Responses SSE event output item`,
+	"service/openai_gateway_chat_completions.go:parseChatRequestForBridge":                                                              `route: chat conversion only; both production callers charge via ChargeRequestConversion before parsing`,
+	"service/upstream_billing_probe.go:UpstreamBillingProbeService.PreviewGroup":                                                        `not-request: upstream billing probe response bytes`,
 	"handler/mcp_oauth_handler.go:mcpOAuthReadJSON":                                                                                     `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes (v0.2.22 MCP OAuth registration, at most 4/16 KiB)`,
 	"handler/openai_page_context.go:normalizeCodexUntrustedContextCharged":                                                              `charged: normalizeCodexUntrustedContext takes chargeConversion before it (TestRequestConvertersChargeFirst)`,
 	"handler/openai_page_context.go:validCodexPageSnapshot":                                                                             `charged: only from normalizeCodexUntrustedContextCharged, after its charge`,
@@ -259,7 +262,6 @@ var requestDecodeSites = map[string]string{
 	"service/openai_gateway_cc_pipeline.go:OpenAIGatewayService.scanCCStream":                                                           `not-request: upstream response bytes`,
 	"service/openai_gateway_chat_completions.go:OpenAIGatewayService.forwardAsChatCompletions":                                          `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,
 	"service/openai_gateway_chat_completions.go:OpenAIGatewayService.handleChatStreamingResponse":                                       `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,
-	"service/openai_gateway_chat_completions_anthropic_native.go:OpenAIGatewayService.forwardChatCompletionsViaNativeAnthropic":         `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,
 	"service/openai_gateway_chat_completions_anthropic_native.go:OpenAIGatewayService.handleCCBufferedFromNativeAnthropic":              `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,
 	"service/openai_gateway_chat_completions_anthropic_native.go:OpenAIGatewayService.handleCCStreamingFromNativeAnthropic":             `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,
 	"service/openai_gateway_count_tokens.go:estimateAnthropicCountTokensLocally":                                                        `route: not reachable from OpenAIGatewayHandler.Responses (VTA call graph); a route charged k_conv from the first byte, or not request bytes`,

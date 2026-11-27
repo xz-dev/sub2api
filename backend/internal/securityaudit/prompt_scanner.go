@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // SplitRunes splits value at the priority separator, then into chunks of at
@@ -33,13 +32,6 @@ func SplitRunes(value string, limit int) []string {
 		}
 	}
 	return chunks
-}
-
-func promptScanChunk(value string) string {
-	if utf8.ValidString(value) {
-		return value // immutable substring; no full-transcript rune buffer/copy
-	}
-	return string([]rune(value)) // preserve the previous invalid-UTF-8 behavior
 }
 
 func AggregateResults(results []*NormalizedResult, latency time.Duration) (*NormalizedResult, error) {
