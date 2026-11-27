@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -111,17 +110,18 @@ func TestRedactPreviewPreservesCompleteInputReplacementOrder(t *testing.T) {
 	runtime.KeepAlive(out)
 }
 
-type memoryTestGatedConfig struct {
-	*fakeConfigStore
-	reads  atomic.Int32
+type memoryTestGatedRepository struct {
+	*fakeJobRepository
 	resume <-chan struct{}
 }
 
-func (c *memoryTestGatedConfig) Active() (ActiveConfig, bool) {
-	if c.reads.Add(1) >= 2 {
-		<-c.resume
+func (r *memoryTestGatedRepository) CreateStagingWithCapacity(ctx context.Context, snapshot PromptSnapshot, version int64, concurrency, capacity int) (*Job, error) {
+	select {
+	case <-r.resume:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return c.fakeConfigStore.Active()
+	return r.fakeJobRepository.CreateStagingWithCapacity(ctx, snapshot, version, concurrency, capacity)
 }
 
 type memoryTestLegacyMutation struct{ mutate func(Request) }
@@ -136,10 +136,10 @@ func TestAsyncAuditOwnsCopyBeforeLegacyOrHandlerCanMutateInput(t *testing.T) {
 	cfg.AllGroups = false
 	cfg.GroupIDs = []int64{1}
 	resume := make(chan struct{})
-	store := &memoryTestGatedConfig{fakeConfigStore: &fakeConfigStore{cfg: cfg, active: true}, resume: resume}
-	repo := &fakeJobRepository{}
+	// Snapshot acquisition is synchronous; hold only the asynchronous commit
+	// so the legacy stage is guaranteed to mutate the request before persistence.
+	repo := &memoryTestGatedRepository{fakeJobRepository: &fakeJobRepository{}, resume: resume}
 	svc := memoryTestPromptService(cfg, repo)
-	svc.config, svc.enqueuer.config = store, store
 	groupID := int64(1)
 	req := asyncRequest()
 	req.GroupID = &groupID
